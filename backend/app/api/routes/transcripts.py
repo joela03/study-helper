@@ -70,8 +70,19 @@ async def create_transcript(
     # Queue async processing
     process_transcript.delay(transcript.id)
 
+    # Refresh to get timestamps
+    await db.refresh(transcript)
+
     return TranscriptResponse(
-        **{k: v for k, v in transcript.__dict__.items() if not k.startswith("_")},
+        id=transcript.id,
+        profile_id=transcript.profile_id,
+        title=transcript.title,
+        status=transcript.status,
+        document_path=transcript.document_path,
+        audio_path=transcript.audio_path,
+        error_message=transcript.error_message,
+        created_at=transcript.created_at,
+        updated_at=transcript.updated_at,
         chunk_count=0,
     )
 
@@ -100,7 +111,15 @@ async def list_transcripts(
     return TranscriptListResponse(
         transcripts=[
             TranscriptResponse(
-                **{k: v for k, v in t.__dict__.items() if not k.startswith("_")},
+                id=t.id,
+                profile_id=t.profile_id,
+                title=t.title,
+                status=t.status,
+                document_path=t.document_path,
+                audio_path=t.audio_path,
+                error_message=t.error_message,
+                created_at=t.created_at,
+                updated_at=t.updated_at,
                 chunk_count=len(t.chunks),
             )
             for t in transcripts
@@ -125,7 +144,15 @@ async def get_transcript(
         raise HTTPException(status_code=404, detail="Transcript not found")
 
     return TranscriptResponse(
-        **{k: v for k, v in transcript.__dict__.items() if not k.startswith("_")},
+        id=transcript.id,
+        profile_id=transcript.profile_id,
+        title=transcript.title,
+        status=transcript.status,
+        document_path=transcript.document_path,
+        audio_path=transcript.audio_path,
+        error_message=transcript.error_message,
+        created_at=transcript.created_at,
+        updated_at=transcript.updated_at,
         chunk_count=len(transcript.chunks),
     )
 

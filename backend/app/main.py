@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import profiles, cards, transcripts, health
+from app.api.routes import profiles, cards, transcripts, health, search
 from app.core.config import settings
 from app.core.database import engine
 from app.models import base
@@ -39,3 +39,4 @@ app.include_router(health.router, tags=["health"])
 app.include_router(profiles.router, prefix="/api/profiles", tags=["profiles"])
 app.include_router(transcripts.router, prefix="/api/transcripts", tags=["transcripts"])
 app.include_router(cards.router, prefix="/api/cards", tags=["cards"])
+app.include_router(search.router, prefix="/api/search", tags=["search"])

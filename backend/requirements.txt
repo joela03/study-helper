@@ -32,6 +32,10 @@ faster-whisper==1.0.3
 nltk==3.9.1
 scikit-learn==1.5.2
 
+# Document extraction
+PyPDF2==3.0.1
+python-pptx==1.0.2
+
 # Utilities
 python-dotenv==1.0.1
 pydantic==2.9.2
