@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     # LLM APIs
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
+    GROQ_API_KEY: str = ""
 
     # Models for different tasks
     FLASHCARD_MODEL: str = "gpt-4o-mini"  # Cheap model for high-frequency generation
