@@ -11,6 +11,7 @@ from app.schemas.card import (
     CardCreate,
     CardResponse,
     CardReview,
+    CardReviewResponse,
     CardListResponse,
     DueCardsResponse,
 )
@@ -99,24 +100,36 @@ async def get_card(
     return CardResponse.model_validate(card)
 
 
-@router.post("/{card_id}/review", response_model=CardResponse)
+@router.post("/{card_id}/review", response_model=CardReviewResponse)
 async def review_card(
     card_id: int,
     review: CardReview,
     db: AsyncSession = Depends(get_db),
 ):
-    """Submit a review for a card, updating its SM-2 state."""
+    """
+    Submit a review for a card, updating its SM-2 state.
+
+    If the card is failed (quality 0-2), it stays in today's queue
+    for immediate re-review.
+    """
     result = await db.execute(select(Card).where(Card.id == card_id))
     card = result.scalar_one_or_none()
 
     if not card:
         raise HTTPException(status_code=404, detail="Card not found")
 
-    card.update_sm2(review.quality)
+    failed = card.update_sm2(review.quality)
     await db.commit()
     await db.refresh(card)
 
-    return CardResponse.model_validate(card)
+    today = date.today()
+    requeued = card.next_review <= today
+
+    return CardReviewResponse(
+        card=CardResponse.model_validate(card),
+        failed=failed,
+        requeued=requeued,
+    )
 
 
 @router.delete("/{card_id}", status_code=204)

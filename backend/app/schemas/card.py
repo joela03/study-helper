@@ -37,6 +37,13 @@ class CardReview(BaseModel):
     quality: int = Field(..., ge=0, le=5, description="0-2 = fail, 3-5 = pass")
 
 
+class CardReviewResponse(BaseModel):
+    """Response after reviewing a card."""
+    card: CardResponse
+    failed: bool = Field(description="True if card was failed and re-queued for today")
+    requeued: bool = Field(description="True if card is still due today")
+
+
 class CardListResponse(BaseModel):
     cards: list[CardResponse]
     total: int

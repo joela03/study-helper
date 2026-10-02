@@ -44,13 +44,18 @@ class Card(Base, TimestampMixin):
     def __repr__(self) -> str:
         return f"<Card {self.id} ({self.card_type.value})>"
 
-    def update_sm2(self, quality: int) -> None:
+    def update_sm2(self, quality: int) -> bool:
         """
         Update card state using SM-2 algorithm.
         Quality: 0-5 (0-2 = fail, 3-5 = pass with varying ease)
+
+        Returns:
+            True if card was failed (should be re-queued immediately)
         """
         if quality < 0 or quality > 5:
             raise ValueError("Quality must be between 0 and 5")
+
+        failed = False
 
         if quality >= 3:
             # Successful review
@@ -61,10 +66,15 @@ class Card(Base, TimestampMixin):
             else:
                 self.interval = round(self.interval * self.ease_factor)
             self.repetitions += 1
+            # Set next review date in the future
+            self.next_review = date.today() + timedelta(days=self.interval)
         else:
-            # Failed review - reset
+            # Failed review - reset and re-queue immediately
             self.repetitions = 0
-            self.interval = 1
+            self.interval = 0
+            # Keep next_review as today so card stays in queue
+            self.next_review = date.today()
+            failed = True
 
         # Update ease factor (minimum 1.3)
         self.ease_factor = max(
@@ -72,5 +82,4 @@ class Card(Base, TimestampMixin):
             self.ease_factor + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))
         )
 
-        # Set next review date
-        self.next_review = date.today() + timedelta(days=self.interval)
+        return failed
