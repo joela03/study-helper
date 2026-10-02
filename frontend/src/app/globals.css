@@ -1,26 +1,151 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@theme {
+  /* Core palette — see design plan */
+  --color-paper: #faf6ef;
+  --color-ink: #23303a;
+  --color-graphite: #6b7a85;
+  --color-rule: #ded6c6;
+  --color-navy: #2e4a66;
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  /* Lighter hairline, only for the paper grid itself */
+  --color-paper-line: #e9e2d4;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-sans: var(--font-karla), ui-sans-serif, system-ui, sans-serif;
+  --font-hand: var(--font-shantell), ui-rounded, system-ui, sans-serif;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+/* ---------------------------------------------------------------------------
+   Paper surfaces — blank / dot / grid.
+
+   Driven by the data-paper attribute an inline script sets on <html> before
+   first paint, so the saved surface never flashes in after hydration.
+   --------------------------------------------------------------------------- */
+
+.canvas {
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    var(--color-rule) 1.1px,
+    transparent 0
+  );
+  background-size: 22px 22px;
+}
+
+[data-paper="blank"] .canvas {
+  background-image: none;
+}
+
+[data-paper="grid"] .canvas {
+  background-image:
+    linear-gradient(var(--color-paper-line) 1px, transparent 0),
+    linear-gradient(90deg, var(--color-paper-line) 1px, transparent 0);
+  background-size: 26px 26px;
+}
+
+/* ---------------------------------------------------------------------------
+   Lift — a sheet of paper resting slightly off the desk.
+
+   Two stacked drop-shadows: a tight contact shadow where the paper meets the
+   surface, and a wider softer one offset opposite the card's own rotation so
+   the lift reads as physical rather than as a uniform CSS box-shadow. Uses
+   `filter` rather than `box-shadow` so the shadow follows the folded-corner
+   clip-path instead of outlining a rectangle.
+
+   Per-card: --rot (rotation) and --lx (shadow x-offset, set opposite --rot).
+   --------------------------------------------------------------------------- */
+
+.lift {
+  transform: rotate(var(--rot, 0deg));
+  filter: drop-shadow(0 1px 0.5px rgb(35 48 58 / 0.14))
+    drop-shadow(var(--lx, 0px) 7px 9px rgb(35 48 58 / 0.13));
+  transition:
+    transform 260ms cubic-bezier(0.2, 0.7, 0.3, 1),
+    filter 260ms cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+/* Hover straightens the sheet and picks it further off the desk */
+.lift-hover:hover {
+  transform: rotate(calc(var(--rot, 0deg) * 0.3)) translateY(-4px);
+  filter: drop-shadow(0 1px 0.5px rgb(35 48 58 / 0.12))
+    drop-shadow(calc(var(--lx, 0px) * 1.4) 13px 16px rgb(35 48 58 / 0.16));
+}
+
+/* ---------------------------------------------------------------------------
+   Folded corner — the top-right corner is cut away and the flap beneath it
+   shows through slightly darker, as on a dog-eared page.
+   --------------------------------------------------------------------------- */
+
+.folded {
+  --fold: 26px;
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--fold)) 0,
+    100% var(--fold),
+    100% 100%,
+    0 100%
+  );
+}
+
+.folded::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: var(--fold);
+  height: var(--fold);
+  background: rgb(35 48 58 / 0.13);
+  clip-path: polygon(0 0, 100% 100%, 0 100%);
+}
+
+/* ---------------------------------------------------------------------------
+   Index card — review screen. Flips on the horizontal axis, the way a card
+   held in the hand turns over. The easing overshoots slightly past 1 so the
+   card settles rather than stopping dead.
+   --------------------------------------------------------------------------- */
+
+.card-stage {
+  perspective: 1600px;
+}
+
+.card-flipper {
+  transform-style: preserve-3d;
+  transition: transform 620ms cubic-bezier(0.2, 0.82, 0.28, 1.06);
+}
+
+.card-flipper[data-flipped="true"] {
+  transform: rotateX(-180deg);
+}
+
+.card-face {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.card-face-back {
+  transform: rotateX(180deg);
+}
+
+/* Ruled lines, with the ruled margin an index card carries down its left edge */
+.card-ruled {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 31px,
+    rgb(35 48 58 / 0.07) 31px,
+    rgb(35 48 58 / 0.07) 32px
+  );
+  background-position: 0 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lift,
+  .lift-hover:hover,
+  .card-flipper {
+    transition: none;
+  }
 }

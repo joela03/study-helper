@@ -1,15 +1,18 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Karla, Shantell_Sans } from "next/font/google";
 import "./globals.css";
-import Navbar from "@/components/Navbar";
+import AppShell from "@/components/AppShell";
+import { DEFAULT_PAPER, PAPER_INLINE_SCRIPT } from "@/lib/paper-store";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+/** Body copy: questions, answers, transcripts, anything longer than a label. */
+const karla = Karla({
+  variable: "--font-karla",
   subsets: ["latin"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+/** Accent only: folder titles, section headers, tab labels, small notes. */
+const shantell = Shantell_Sans({
+  variable: "--font-shantell",
   subsets: ["latin"],
 });
 
@@ -22,13 +25,16 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      data-paper={DEFAULT_PAPER}
+      suppressHydrationWarning
+      className={`${karla.variable} ${shantell.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-gray-900 text-white">
-        <Navbar />
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
-          {children}
-        </main>
+      <head>
+        {/* Applies the saved paper surface during parsing, before first paint */}
+        <script dangerouslySetInnerHTML={{ __html: PAPER_INLINE_SCRIPT }} />
+      </head>
+      <body className="min-h-full bg-paper font-sans text-ink">
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );
