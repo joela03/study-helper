@@ -14,8 +14,15 @@ async def lifespan(app: FastAPI):
     # Startup: create tables (use alembic migrations in production)
     async with engine.begin() as conn:
         await conn.run_sync(base.Base.metadata.create_all)
+
+    # Start scheduler for daily reminders
+    from app.tasks.scheduler import start_scheduler, stop_scheduler
+    start_scheduler()
+
     yield
+
     # Shutdown
+    stop_scheduler()
     await engine.dispose()
 
 
