@@ -2,97 +2,162 @@
 
 import { useState } from "react";
 import { Card } from "@/types";
-import { reviewCard } from "@/lib/api";
+import { reviewCard, ReviewResponse } from "@/lib/api";
+import { accentFor, rotationFor, liftOffsetFor } from "@/lib/accents";
 
 interface Props {
   card: Card;
-  onReviewed: (updatedCard: Card) => void;
+  /** Position in the session, written in the card's corner. */
+  position: number;
+  onReviewed: (response: ReviewResponse) => void;
   onSkip: () => void;
 }
 
-export default function FlashcardReview({ card, onReviewed, onSkip }: Props) {
-  const [showAnswer, setShowAnswer] = useState(false);
+/* Muted ink-on-pastel chips rather than four saturated buttons */
+const GRADES = [
+  { quality: 0, label: "Forgot", paper: "#f0c9c9", ink: "#8d4247" },
+  { quality: 1, label: "Hard", paper: "#eed7bd", ink: "#8a5c38" },
+  { quality: 3, label: "Good", paper: "#cfdeef", ink: "#3f6b95" },
+  { quality: 5, label: "Easy", paper: "#cedfd0", ink: "#4a6f52" },
+];
+
+export default function FlashcardReview({
+  card,
+  position,
+  onReviewed,
+  onSkip,
+}: Props) {
+  /* Keyed on card.id by the caller, so each new card mounts fresh, face up */
+  const [flipped, setFlipped] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleGrade = async (quality: number) => {
+  const accent = accentFor(card.profile_id);
+  const rotation = rotationFor(card.id, 0.9);
+
+  async function handleGrade(quality: number) {
     setIsSubmitting(true);
     try {
-      const updated = await reviewCard(card.id, quality);
-      onReviewed(updated);
-      setShowAnswer(false);
+      const response = await reviewCard(card.id, quality);
+      onReviewed(response);
     } catch (error) {
       console.error("Failed to submit review:", error);
     } finally {
       setIsSubmitting(false);
     }
-  };
+  }
 
-  const gradeButtons = [
-    { quality: 0, label: "Forgot", color: "bg-red-600 hover:bg-red-700" },
-    { quality: 1, label: "Hard", color: "bg-orange-600 hover:bg-orange-700" },
-    { quality: 3, label: "Good", color: "bg-blue-600 hover:bg-blue-700" },
-    { quality: 5, label: "Easy", color: "bg-green-600 hover:bg-green-700" },
-  ];
+  const faceBase =
+    "card-face absolute inset-0 flex flex-col rounded-[4px] border border-rule bg-paper px-8 py-7";
 
   return (
-    <div className="max-w-2xl mx-auto">
-      <div className="bg-gray-800 rounded-lg shadow-lg p-8">
-        {/* Question */}
-        <div className="mb-8">
-          <h3 className="text-sm font-medium text-gray-400 mb-2">Question</h3>
-          <p className="text-xl text-white">{card.question}</p>
-        </div>
-
-        {/* Answer */}
-        {showAnswer ? (
-          <div className="mb-8">
-            <h3 className="text-sm font-medium text-gray-400 mb-2">Answer</h3>
-            <p className="text-lg text-gray-200">{card.answer}</p>
-          </div>
-        ) : (
-          <button
-            onClick={() => setShowAnswer(true)}
-            className="w-full py-4 bg-gray-700 hover:bg-gray-600 text-white rounded-lg font-medium mb-8"
+    <div className="mx-auto max-w-2xl">
+      {/* lift (rotate + shadow filter) and card-stage (perspective) stay on
+          separate elements: a filter on the perspective element can flatten
+          the 3D context in some browsers */}
+      <div
+        className="lift"
+        style={
+          {
+            "--rot": `${rotation}deg`,
+            "--lx": `${liftOffsetFor(rotation)}px`,
+          } as React.CSSProperties
+        }
+      >
+        <div className="card-stage">
+          <div
+            className="card-flipper relative min-h-[21rem]"
+            data-flipped={flipped}
           >
-            Show Answer
-          </button>
-        )}
+            {/* Front — question */}
+            <div className={faceBase} aria-hidden={flipped}>
+              <CardHeader accent={accent.tab} position={position} />
 
-        {/* Grade buttons */}
-        {showAnswer && (
-          <div>
-            <h3 className="text-sm font-medium text-gray-400 mb-3">
-              How well did you know this?
-            </h3>
-            <div className="grid grid-cols-4 gap-3">
-              {gradeButtons.map((btn) => (
-                <button
-                  key={btn.quality}
-                  onClick={() => handleGrade(btn.quality)}
-                  disabled={isSubmitting}
-                  className={`py-3 px-4 rounded-lg font-medium text-white ${btn.color} disabled:opacity-50`}
-                >
-                  {btn.label}
-                </button>
-              ))}
+              <div className="card-ruled mt-5 flex-1 overflow-y-auto">
+                <p className="text-xl leading-8 text-ink">{card.question}</p>
+              </div>
+
+              <button
+                onClick={() => setFlipped(true)}
+                className="mt-5 self-start font-hand text-sm text-graphite underline decoration-rule decoration-2 underline-offset-4 hover:text-ink"
+              >
+                turn the card over →
+              </button>
+            </div>
+
+            {/* Back — answer */}
+            <div className={`${faceBase} card-face-back`} aria-hidden={!flipped}>
+              <CardHeader accent={accent.tab} position={position} back />
+
+              <div className="card-ruled mt-5 flex-1 overflow-y-auto">
+                <p className="text-lg leading-8 text-ink/90">{card.answer}</p>
+              </div>
+
+              <button
+                onClick={() => setFlipped(false)}
+                className="mt-5 self-start font-hand text-sm text-graphite underline decoration-rule decoration-2 underline-offset-4 hover:text-ink"
+              >
+                ← back to the question
+              </button>
             </div>
           </div>
-        )}
+        </div>
+      </div>
 
-        {/* Skip button */}
-        <button
-          onClick={onSkip}
-          className="mt-6 w-full py-2 text-gray-400 hover:text-gray-300 text-sm"
-        >
-          Skip this card
+      {/* Grading sits on the desk below the card, not on it */}
+      <div
+        className={`mt-8 transition-opacity duration-300 ${
+          flipped ? "opacity-100" : "pointer-events-none opacity-0"
+        }`}
+      >
+        <p className="font-hand text-sm text-graphite">How did that go?</p>
+        <div className="mt-3 flex flex-wrap gap-3">
+          {GRADES.map((grade) => (
+            <button
+              key={grade.quality}
+              onClick={() => handleGrade(grade.quality)}
+              disabled={isSubmitting || !flipped}
+              style={{ backgroundColor: grade.paper, color: grade.ink }}
+              className="rounded-md px-5 py-2 font-hand text-sm transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+            >
+              {grade.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-7 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-graphite">
+        <button onClick={onSkip} className="hover:text-ink">
+          put this one to the back
         </button>
+        <span aria-hidden="true">·</span>
+        <span>
+          seen {card.repetitions}×, next in {card.interval}d, ease{" "}
+          {card.ease_factor.toFixed(2)}
+        </span>
       </div>
+    </div>
+  );
+}
 
-      {/* Card info */}
-      <div className="mt-4 text-center text-sm text-gray-500">
-        Interval: {card.interval} days · Ease: {card.ease_factor.toFixed(2)} ·
-        Reviews: {card.repetitions}
-      </div>
+function CardHeader({
+  accent,
+  position,
+  back = false,
+}: {
+  accent: string;
+  position: number;
+  back?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between">
+      <span
+        className="h-2 w-12 rounded-full"
+        style={{ backgroundColor: accent }}
+        aria-hidden="true"
+      />
+      <span className="font-hand text-xs text-graphite">
+        {back ? "answer" : `no. ${position}`}
+      </span>
     </div>
   );
 }

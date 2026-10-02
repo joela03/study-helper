@@ -1,28 +1,28 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Card } from "@/types";
-import { getDueCards } from "@/lib/api";
+import { getDueCards, ReviewResponse } from "@/lib/api";
 import FlashcardReview from "@/components/FlashcardReview";
+import { useProfiles } from "@/lib/profiles-context";
+import { accentFor } from "@/lib/accents";
 
-export default function ReviewPage() {
+function ReviewSession() {
   const searchParams = useSearchParams();
   const profileId = searchParams.get("profile")
     ? Number(searchParams.get("profile"))
     : undefined;
 
+  const { profiles, refresh } = useProfiles();
   const [cards, setCards] = useState<Card[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [completed, setCompleted] = useState(0);
+  const [failed, setFailed] = useState(0);
 
-  useEffect(() => {
-    fetchDueCards();
-  }, [profileId]);
-
-  async function fetchDueCards() {
+  const fetchDueCards = useCallback(async () => {
     try {
       const res = await getDueCards(profileId);
       setCards(res.cards);
@@ -31,99 +31,161 @@ export default function ReviewPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [profileId]);
 
-  function handleReviewed(updatedCard: Card) {
+  useEffect(() => {
+    fetchDueCards();
+  }, [fetchDueCards]);
+
+  const subject = profileId
+    ? profiles.find((p) => p.id === profileId)
+    : undefined;
+
+  function handleReviewed(response: ReviewResponse) {
     setCompleted(completed + 1);
-    // Move to next card
-    if (currentIndex < cards.length - 1) {
-      setCurrentIndex(currentIndex + 1);
+
+    if (response.failed) {
+      // Card was failed - add it back to the end of the queue
+      setFailed(failed + 1);
+      const updatedCards = [...cards];
+      // Remove from current position and add to end
+      updatedCards.splice(currentIndex, 1);
+      updatedCards.push(response.card);
+      setCards(updatedCards);
+      // Don't increment index since we removed the current card
     } else {
-      // All done
-      setCards([]);
+      // Card passed - move to next
+      if (currentIndex < cards.length - 1) {
+        setCurrentIndex(currentIndex + 1);
+      } else {
+        // All done
+        setCards([]);
+        refresh();
+      }
     }
   }
 
   function handleSkip() {
-    if (currentIndex < cards.length - 1) {
-      setCurrentIndex(currentIndex + 1);
-    }
+    // Move skipped card to end of queue
+    const updatedCards = [...cards];
+    const skippedCard = updatedCards.splice(currentIndex, 1)[0];
+    updatedCards.push(skippedCard);
+    setCards(updatedCards);
+    // Don't increment index since we removed the current card
   }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-gray-400">Loading...</div>
-      </div>
+      <p className="font-hand text-sm text-graphite">pulling the cards…</p>
     );
   }
 
-  // No cards due
   if (cards.length === 0 && completed === 0) {
     return (
-      <div className="text-center py-16">
-        <h1 className="text-3xl font-bold mb-4">No Cards Due</h1>
-        <p className="text-gray-400 mb-8">
-          You&apos;re all caught up! Check back later for more reviews.
+      <Note title="Nothing due.">
+        <p className="text-sm text-graphite">
+          You&apos;re caught up{subject ? ` on ${subject.name}` : ""}. Come back
+          when the next batch comes round.
         </p>
-        <Link
-          href="/"
-          className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium"
-        >
-          Back to Dashboard
-        </Link>
-      </div>
+      </Note>
     );
   }
 
-  // All done
   if (cards.length === 0 && completed > 0) {
     return (
-      <div className="text-center py-16">
-        <h1 className="text-3xl font-bold mb-4">Session Complete!</h1>
-        <p className="text-gray-400 mb-2">
-          You reviewed {completed} card{completed !== 1 ? "s" : ""}.
+      <Note title="That's the stack.">
+        <p className="text-sm text-graphite">
+          {completed} card{completed === 1 ? "" : "s"} reviewed
+          {failed > 0 && (
+            <>
+              , {failed} of which came back round after a miss
+            </>
+          )}
+          .
         </p>
-        <p className="text-gray-500 mb-8">Great work! Keep it up.</p>
-        <Link
-          href="/"
-          className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium"
-        >
-          Back to Dashboard
-        </Link>
-      </div>
+      </Note>
     );
   }
 
   const currentCard = cards[currentIndex];
   const remaining = cards.length - currentIndex;
+  const accent = subject ? accentFor(subject.id) : null;
 
   return (
     <div>
-      {/* Progress */}
-      <div className="mb-8">
-        <div className="flex justify-between items-center mb-2">
-          <h1 className="text-2xl font-bold">Review Session</h1>
-          <span className="text-gray-400">
-            {remaining} remaining · {completed} completed
-          </span>
+      <div className="mx-auto max-w-2xl">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h1 className="font-hand text-xl">
+            {subject ? subject.name : "Everything due"}
+          </h1>
+          <p className="text-xs text-graphite">
+            {remaining} to go · {completed} done
+            {failed > 0 && ` · ${failed} back in the pile`}
+          </p>
         </div>
-        <div className="w-full bg-gray-700 rounded-full h-2">
+
+        {/* A pencil line filling in, not a rounded progress pill */}
+        <div className="mt-3 h-px w-full bg-rule">
           <div
-            className="bg-blue-600 h-2 rounded-full transition-all"
+            className="h-px transition-all duration-500"
             style={{
               width: `${(completed / (completed + remaining)) * 100}%`,
+              backgroundColor: accent ? accent.ink : "var(--color-navy)",
             }}
           />
         </div>
       </div>
 
-      {/* Card */}
-      <FlashcardReview
-        card={currentCard}
-        onReviewed={handleReviewed}
-        onSkip={handleSkip}
-      />
+      <div className="mt-12">
+        <FlashcardReview
+          key={currentCard.id}
+          card={currentCard}
+          position={completed + 1}
+          onReviewed={handleReviewed}
+          onSkip={handleSkip}
+        />
+      </div>
     </div>
+  );
+}
+
+/** A torn-off note left on the desk — used for the empty and finished states. */
+function Note({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className="lift mx-auto max-w-md"
+      style={{ "--rot": "-0.8deg", "--lx": "1.8px" } as React.CSSProperties}
+    >
+      <div className="overflow-hidden rounded-tl-xl rounded-br-xl rounded-bl-sm">
+        <div className="folded relative bg-[#f3e3a3] p-7">
+          <h1 className="font-hand text-xl text-[#8a6e1e]">{title}</h1>
+          <div className="mt-2">{children}</div>
+          <Link
+            href="/"
+            className="mt-5 inline-block font-hand text-sm text-[#8a6e1e] underline decoration-2 underline-offset-4"
+          >
+            back to the desk
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function ReviewPage() {
+  return (
+    <Suspense
+      fallback={
+        <p className="font-hand text-sm text-graphite">pulling the cards…</p>
+      }
+    >
+      <ReviewSession />
+    </Suspense>
   );
 }

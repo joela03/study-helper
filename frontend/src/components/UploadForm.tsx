@@ -3,13 +3,15 @@
 import { useState } from "react";
 import { uploadTranscript } from "@/lib/api";
 import { Transcript } from "@/types";
+import { Accent } from "@/lib/accents";
 
 interface Props {
   profileId: number;
+  accent: Accent;
   onUploaded: (transcript: Transcript) => void;
 }
 
-export default function UploadForm({ profileId, onUploaded }: Props) {
+export default function UploadForm({ profileId, accent, onUploaded }: Props) {
   const [title, setTitle] = useState("");
   const [document, setDocument] = useState<File | null>(null);
   const [audio, setAudio] = useState<File | null>(null);
@@ -19,11 +21,11 @@ export default function UploadForm({ profileId, onUploaded }: Props) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) {
-      setError("Title is required");
+      setError("Give it a title first");
       return;
     }
     if (!document && !audio) {
-      setError("At least one file (document or audio) is required");
+      setError("Attach a document or an audio file");
       return;
     }
 
@@ -48,62 +50,72 @@ export default function UploadForm({ profileId, onUploaded }: Props) {
     }
   };
 
+  const fileInput =
+    "mt-1 w-full text-sm text-graphite file:mr-3 file:rounded file:border-0 file:bg-rule/50 file:px-3 file:py-1.5 file:font-sans file:text-ink hover:file:bg-rule";
+
   return (
-    <form onSubmit={handleSubmit} className="bg-gray-800 rounded-lg p-6">
-      <h3 className="text-lg font-semibold text-white mb-4">
-        Upload New Transcript
+    <form
+      onSubmit={handleSubmit}
+      className="lift rounded-tl-xl rounded-br-xl rounded-bl-sm border border-dashed p-5"
+      style={
+        {
+          "--rot": "0.4deg",
+          "--lx": "-0.9px",
+          borderColor: accent.tab,
+        } as React.CSSProperties
+      }
+    >
+      <h3 className="font-hand text-sm" style={{ color: accent.ink }}>
+        Add a lecture
       </h3>
 
       {error && (
-        <div className="mb-4 p-3 bg-red-900/50 border border-red-700 rounded text-red-200 text-sm">
-          {error}
-        </div>
+        <p className="mt-2 text-sm text-[#9e4f54]">{error}</p>
       )}
 
-      <div className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-300 mb-1">
-            Title
-          </label>
+      <div className="mt-4 space-y-4">
+        <label className="block">
+          <span className="font-hand text-xs text-graphite">Title</span>
           <input
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            placeholder="e.g., Lecture 1 - Introduction"
-            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
+            placeholder="Lecture 1 — Introduction"
+            className="mt-1 w-full border-b border-rule bg-transparent pb-1.5 text-ink placeholder:text-ink/30 focus:border-navy focus:outline-none"
           />
-        </div>
+        </label>
 
-        <div>
-          <label className="block text-sm font-medium text-gray-300 mb-1">
-            Document (PDF, PPTX, TXT)
-          </label>
+        <label className="block">
+          <span className="font-hand text-xs text-graphite">
+            Document — pdf, pptx, txt
+          </span>
           <input
             type="file"
             accept=".pdf,.pptx,.ppt,.txt"
             onChange={(e) => setDocument(e.target.files?.[0] || null)}
-            className="w-full text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-gray-700 file:text-white hover:file:bg-gray-600"
+            className={fileInput}
           />
-        </div>
+        </label>
 
-        <div>
-          <label className="block text-sm font-medium text-gray-300 mb-1">
-            Audio (MP3, WAV, M4A)
-          </label>
+        <label className="block">
+          <span className="font-hand text-xs text-graphite">
+            Audio — mp3, wav, m4a
+          </span>
           <input
             type="file"
             accept=".mp3,.wav,.m4a,.ogg,.flac"
             onChange={(e) => setAudio(e.target.files?.[0] || null)}
-            className="w-full text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-gray-700 file:text-white hover:file:bg-gray-600"
+            className={fileInput}
           />
-        </div>
+        </label>
 
         <button
           type="submit"
           disabled={isUploading}
-          className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed text-white rounded-lg font-medium"
+          className="rounded-md px-4 py-2 font-hand text-sm transition-transform hover:-translate-y-0.5 disabled:opacity-50 disabled:hover:translate-y-0"
+          style={{ backgroundColor: accent.tab, color: accent.ink }}
         >
-          {isUploading ? "Uploading..." : "Upload"}
+          {isUploading ? "filing…" : "File it"}
         </button>
       </div>
     </form>

@@ -98,10 +98,16 @@ export async function getDueCards(
   return fetchAPI(`/api/cards/due${params}`);
 }
 
+export interface ReviewResponse {
+  card: Card;
+  failed: boolean;
+  requeued: boolean;
+}
+
 export async function reviewCard(
   cardId: number,
   quality: number
-): Promise<Card> {
+): Promise<ReviewResponse> {
   return fetchAPI(`/api/cards/${cardId}/review`, {
     method: "POST",
     body: JSON.stringify({ quality }),

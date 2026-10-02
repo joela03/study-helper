@@ -1,131 +1,128 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Profile } from "@/types";
-import { getProfiles, createProfile } from "@/lib/api";
-import ProfileCard from "@/components/ProfileCard";
+import { useState } from "react";
+import { createProfile } from "@/lib/api";
+import { useProfiles } from "@/lib/profiles-context";
+import { ACCENTS } from "@/lib/accents";
+import FolderCard from "@/components/FolderCard";
 
 export default function ProfilesPage() {
-  const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { profiles, loading, add } = useProfiles();
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
   const [newCode, setNewCode] = useState("");
   const [creating, setCreating] = useState(false);
-
-  useEffect(() => {
-    fetchProfiles();
-  }, []);
-
-  async function fetchProfiles() {
-    try {
-      const res = await getProfiles();
-      setProfiles(res.profiles);
-    } catch (error) {
-      console.error("Failed to fetch profiles:", error);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const [error, setError] = useState<string | null>(null);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!newName.trim()) return;
 
     setCreating(true);
+    setError(null);
     try {
       const profile = await createProfile({
         name: newName,
         module_code: newCode || undefined,
       });
-      setProfiles([...profiles, profile]);
+      add(profile);
       setNewName("");
       setNewCode("");
       setShowCreate(false);
-    } catch (error) {
-      console.error("Failed to create profile:", error);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't create that one");
     } finally {
       setCreating(false);
     }
   }
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-gray-400">Loading...</div>
-      </div>
-    );
+    return <p className="font-hand text-sm text-graphite">finding them…</p>;
   }
+
+  /* Colours are assigned by id, so the next one is predictable before saving */
+  const nextAccent = ACCENTS[profiles.length % ACCENTS.length];
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold">Profiles</h1>
+      <div className="flex flex-wrap items-baseline justify-between gap-4">
+        <h1 className="font-hand text-2xl">Subjects</h1>
         <button
           onClick={() => setShowCreate(!showCreate)}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium"
+          className="font-hand text-sm text-graphite underline decoration-rule decoration-2 underline-offset-4 hover:text-ink"
         >
-          {showCreate ? "Cancel" : "New Profile"}
+          {showCreate ? "never mind" : "+ new subject"}
         </button>
       </div>
 
-      {/* Create form */}
       {showCreate && (
         <form
           onSubmit={handleCreate}
-          className="bg-gray-800 rounded-lg p-6 mb-8"
+          className="lift mt-6 max-w-xl rounded-tl-xl rounded-br-xl rounded-bl-sm border border-rule bg-paper p-6"
+          style={{ "--rot": "-0.5deg", "--lx": "1.1px" } as React.CSSProperties}
         >
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">
-                Name *
-              </label>
+          <div className="flex items-center gap-2">
+            <span
+              className="h-3.5 w-3.5 rounded-full"
+              style={{ backgroundColor: nextAccent.paper }}
+              aria-hidden="true"
+            />
+            <p className="font-hand text-sm text-graphite">
+              this one will be {nextAccent.key}
+            </p>
+          </div>
+
+          {error && (
+            <p className="mt-3 text-sm" style={{ color: "#9e4f54" }}>
+              {error}
+            </p>
+          )}
+
+          <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2">
+            <label className="block">
+              <span className="font-hand text-xs text-graphite">Name</span>
               <input
                 type="text"
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
-                placeholder="e.g., Machine Learning"
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
+                placeholder="Machine Learning"
+                className="mt-1 w-full border-b border-rule bg-transparent pb-1.5 text-ink placeholder:text-ink/30 focus:border-navy focus:outline-none"
               />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">
-                Module Code
-              </label>
+            </label>
+            <label className="block">
+              <span className="font-hand text-xs text-graphite">
+                Module code
+              </span>
               <input
                 type="text"
                 value={newCode}
                 onChange={(e) => setNewCode(e.target.value)}
-                placeholder="e.g., CS101"
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
+                placeholder="CS101"
+                className="mt-1 w-full border-b border-rule bg-transparent pb-1.5 text-ink placeholder:text-ink/30 focus:border-navy focus:outline-none"
               />
-            </div>
+            </label>
           </div>
+
           <button
             type="submit"
             disabled={creating || !newName.trim()}
-            className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 rounded-lg font-medium"
+            className="mt-6 rounded-md bg-navy px-5 py-2 font-hand text-sm text-paper transition-transform hover:-translate-y-0.5 disabled:opacity-40 disabled:hover:translate-y-0"
           >
-            {creating ? "Creating..." : "Create Profile"}
+            {creating ? "filing…" : "Add to binder"}
           </button>
         </form>
       )}
 
-      {/* Profiles grid */}
       {profiles.length === 0 ? (
-        <div className="bg-gray-800 rounded-lg p-8 text-center">
-          <p className="text-gray-400 mb-4">No profiles yet</p>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="text-blue-400 hover:text-blue-300"
-          >
-            Create your first profile
-          </button>
-        </div>
+        <p className="mt-8 text-sm text-graphite">
+          The binder is empty. Start a subject above.
+        </p>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="mt-10 flex flex-wrap items-stretch gap-x-7 gap-y-9">
           {profiles.map((profile) => (
-            <ProfileCard key={profile.id} profile={profile} />
+            <div key={profile.id} className="w-full sm:w-60">
+              <FolderCard profile={profile} />
+            </div>
           ))}
         </div>
       )}
