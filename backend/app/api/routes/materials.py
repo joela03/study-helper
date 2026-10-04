@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.deps import get_current_user, get_owned_profile
+from app.models.user import User
 from app.models.material import CourseMaterial, MaterialKind
 from app.models.profile import SubjectProfile
 from app.services.extraction import extract_document_text
@@ -72,17 +74,14 @@ async def create_material(
     kind: MaterialKind = Form(MaterialKind.OTHER),
     content: str | None = Form(None),
     file: UploadFile | None = File(None),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Add a material, either as a file (pdf, pptx, docx, txt, md) or as typed
     text. Text is extracted on upload so generation never re-reads the file.
     """
-    result = await db.execute(
-        select(SubjectProfile).where(SubjectProfile.id == profile_id)
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Profile not found")
+    await get_owned_profile(profile_id, user, db)
 
     typed = content.strip() if content else None
     if not file and not typed:
@@ -130,11 +129,21 @@ async def create_material(
 @router.get("/", response_model=MaterialListResponse)
 async def list_materials(
     profile_id: int | None = None,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(CourseMaterial)
+
     if profile_id:
+        await get_owned_profile(profile_id, user, db)
         query = query.where(CourseMaterial.profile_id == profile_id)
+    elif not user.is_admin:
+        # Unscoped listing still only returns this user's subjects
+        query = query.where(
+            CourseMaterial.profile_id.in_(
+                select(SubjectProfile.id).where(SubjectProfile.user_id == user.id)
+            )
+        )
 
     result = await db.execute(query.order_by(CourseMaterial.created_at))
     materials = result.scalars().all()
@@ -149,6 +158,7 @@ async def list_materials(
 async def update_material(
     material_id: int,
     update: MaterialUpdate,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Edit a material — retitle, reclassify, or correct its text."""
@@ -159,6 +169,8 @@ async def update_material(
 
     if not material:
         raise HTTPException(status_code=404, detail="Material not found")
+
+    await get_owned_profile(material.profile_id, user, db)
 
     if update.title is not None:
         material.title = update.title
@@ -175,6 +187,7 @@ async def update_material(
 @router.delete("/{material_id}", status_code=204)
 async def delete_material(
     material_id: int,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -184,6 +197,8 @@ async def delete_material(
 
     if not material:
         raise HTTPException(status_code=404, detail="Material not found")
+
+    await get_owned_profile(material.profile_id, user, db)
 
     if material.file_path and os.path.exists(material.file_path):
         os.remove(material.file_path)

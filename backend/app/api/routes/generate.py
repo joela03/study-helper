@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
+from app.core.deps import get_current_user, get_owned_profile
+from app.models.user import User
 from app.models.card import Card, CardType
 from app.models.transcript import Transcript, TranscriptChunk
 from app.models.profile import SubjectProfile
@@ -63,16 +65,11 @@ class GenerateResponse(BaseModel):
 @router.post("/from-text", response_model=GenerateResponse)
 async def generate_from_text(
     request: GenerateFromTextRequest,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate flashcards from provided text content."""
-    # Verify profile exists
-    result = await db.execute(
-        select(SubjectProfile).where(SubjectProfile.id == request.profile_id)
-    )
-    profile = result.scalar_one_or_none()
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
+    await get_owned_profile(request.profile_id, user, db)
 
     try:
         provider = get_available_provider()
@@ -124,6 +121,7 @@ async def generate_from_text(
 @router.post("/from-transcript", response_model=GenerateResponse)
 async def generate_from_transcript(
     request: GenerateFromTranscriptRequest,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate flashcards from a transcript's content."""
@@ -137,6 +135,8 @@ async def generate_from_transcript(
 
     if not transcript:
         raise HTTPException(status_code=404, detail="Transcript not found")
+
+    await get_owned_profile(transcript.profile_id, user, db)
 
     if not transcript.chunks:
         raise HTTPException(
@@ -204,18 +204,13 @@ async def generate_from_transcript(
 @router.post("/from-search", response_model=GenerateResponse)
 async def generate_from_search(
     request: GenerateFromSearchRequest,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate flashcards from chunks matching a search query."""
     from sqlalchemy import text
 
-    # Verify profile exists
-    result = await db.execute(
-        select(SubjectProfile).where(SubjectProfile.id == request.profile_id)
-    )
-    profile = result.scalar_one_or_none()
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
+    await get_owned_profile(request.profile_id, user, db)
 
     # Search for relevant chunks
     query_embedding = generate_embedding(request.query)

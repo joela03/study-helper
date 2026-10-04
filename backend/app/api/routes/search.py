@@ -7,7 +7,10 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models.transcript import TranscriptChunk
+from app.core.deps import get_current_user, get_owned_profile
+from app.models.user import User
+from app.models.profile import SubjectProfile
+from app.models.transcript import Transcript, TranscriptChunk
 from app.services.embeddings import generate_embedding
 
 router = APIRouter()
@@ -34,6 +37,7 @@ async def semantic_search(
     q: str = Query(..., min_length=3, description="Search query"),
     profile_id: int | None = Query(None, description="Filter by profile"),
     limit: int = Query(10, ge=1, le=50),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -41,6 +45,9 @@ async def semantic_search(
 
     Uses pgvector to find chunks most similar to the query.
     """
+    if profile_id:
+        await get_owned_profile(profile_id, user, db)
+
     # Generate embedding for query
     query_embedding = generate_embedding(q)
 
@@ -67,7 +74,7 @@ async def semantic_search(
             sql,
             {"embedding": embedding_str, "profile_id": profile_id, "limit": limit}
         )
-    else:
+    elif user.is_admin:
         sql = text("""
             SELECT
                 tc.id as chunk_id,
@@ -79,6 +86,32 @@ async def semantic_search(
             LIMIT :limit
         """)
         result = await db.execute(sql, {"embedding": embedding_str, "limit": limit})
+    else:
+        # Searching every subject you own, and no further
+        owned = await db.execute(
+            select(SubjectProfile.id).where(SubjectProfile.user_id == user.id)
+        )
+        owned_ids = [row[0] for row in owned]
+
+        if not owned_ids:
+            return SearchResponse(query=q, results=[], total=0)
+
+        sql = text("""
+            SELECT
+                tc.id as chunk_id,
+                tc.transcript_id,
+                tc.content,
+                1 - (tc.embedding <=> cast(:embedding as vector)) as similarity
+            FROM transcript_chunks tc
+            JOIN transcripts t ON tc.transcript_id = t.id
+            WHERE t.profile_id = ANY(:profile_ids)
+            ORDER BY tc.embedding <=> cast(:embedding as vector)
+            LIMIT :limit
+        """)
+        result = await db.execute(
+            sql,
+            {"embedding": embedding_str, "profile_ids": owned_ids, "limit": limit},
+        )
 
     rows = result.fetchall()
 
@@ -98,9 +131,18 @@ async def semantic_search(
 @router.get("/chunks/{transcript_id}")
 async def get_transcript_chunks(
     transcript_id: int,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get all chunks for a transcript."""
+    found = await db.execute(
+        select(Transcript).where(Transcript.id == transcript_id)
+    )
+    transcript = found.scalar_one_or_none()
+    if not transcript:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+    await get_owned_profile(transcript.profile_id, user, db)
+
     result = await db.execute(
         select(TranscriptChunk)
         .where(TranscriptChunk.transcript_id == transcript_id)

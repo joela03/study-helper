@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useParams } from "next/navigation";
 import { accentFor } from "@/lib/accents";
 import { useProfiles } from "@/lib/profiles-context";
+import { useAuth } from "@/lib/auth-context";
 
 /**
  * The left rail: subjects as the coloured edge tabs of a ring binder. The
@@ -13,6 +14,7 @@ export default function SubjectTabs() {
   const pathname = usePathname();
   const params = useParams();
   const { profiles, loading } = useProfiles();
+  const { user, signOut } = useAuth();
 
   const activeId = params?.id ? Number(params.id) : null;
 
@@ -105,6 +107,21 @@ export default function SubjectTabs() {
       >
         + new subject
       </Link>
+
+      {user && (
+        <div className="mt-8 hidden lg:block lg:px-6">
+          <p className="truncate text-xs text-ink/45">
+            {user.display_name}
+            {user.is_admin && <span className="ml-1 text-graphite">· admin</span>}
+          </p>
+          <button
+            onClick={signOut}
+            className="mt-1 font-hand text-xs text-graphite hover:text-ink"
+          >
+            sign out
+          </button>
+        </div>
+      )}
     </nav>
   );
 }

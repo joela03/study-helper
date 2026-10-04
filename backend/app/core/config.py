@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
+    # Auth. SECRET_KEY must be set from the environment in any real
+    # deployment — the default exists only so local dev runs out of the box.
+    SECRET_KEY: str = "dev-only-insecure-change-me"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 14
+
     # File uploads
     UPLOAD_DIR: str = "/app/uploads"
     MAX_UPLOAD_SIZE_MB: int = 100

@@ -8,6 +8,8 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.deps import get_current_user, get_owned_profile
+from app.models.user import User
 from app.models.profile import SubjectProfile
 from app.models.transcript import Transcript, TranscriptStatus
 from app.models.card import Card
@@ -31,6 +33,7 @@ async def create_transcript(
     audio: UploadFile | None = File(None),
     transcript_text: str | None = Form(None),
     transcript_file: UploadFile | None = File(None),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -47,12 +50,7 @@ async def create_transcript(
     A text-looking file sent in the audio field is re-routed here rather than
     handed to Whisper, so the caller does not have to get the field right.
     """
-    # Verify profile exists
-    result = await db.execute(
-        select(SubjectProfile).where(SubjectProfile.id == profile_id)
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Profile not found")
+    await get_owned_profile(profile_id, user, db)
 
     pasted_text = transcript_text.strip() if transcript_text else None
 
@@ -172,12 +170,20 @@ async def list_transcripts(
     profile_id: int | None = None,
     skip: int = 0,
     limit: int = 50,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Transcript).options(selectinload(Transcript.chunks))
 
     if profile_id:
+        await get_owned_profile(profile_id, user, db)
         query = query.where(Transcript.profile_id == profile_id)
+    elif not user.is_admin:
+        query = query.where(
+            Transcript.profile_id.in_(
+                select(SubjectProfile.id).where(SubjectProfile.user_id == user.id)
+            )
+        )
 
     result = await db.execute(query.offset(skip).limit(limit))
     transcripts = result.scalars().all()
@@ -185,6 +191,12 @@ async def list_transcripts(
     count_query = select(func.count(Transcript.id))
     if profile_id:
         count_query = count_query.where(Transcript.profile_id == profile_id)
+    elif not user.is_admin:
+        count_query = count_query.where(
+            Transcript.profile_id.in_(
+                select(SubjectProfile.id).where(SubjectProfile.user_id == user.id)
+            )
+        )
     count_result = await db.execute(count_query)
     total = count_result.scalar()
 
@@ -211,6 +223,7 @@ async def list_transcripts(
 @router.get("/{transcript_id}", response_model=TranscriptResponse)
 async def get_transcript(
     transcript_id: int,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -222,6 +235,8 @@ async def get_transcript(
 
     if not transcript:
         raise HTTPException(status_code=404, detail="Transcript not found")
+
+    await get_owned_profile(transcript.profile_id, user, db)
 
     return TranscriptResponse(
         id=transcript.id,
@@ -240,6 +255,7 @@ async def get_transcript(
 @router.delete("/{transcript_id}", status_code=204)
 async def delete_transcript(
     transcript_id: int,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -249,6 +265,8 @@ async def delete_transcript(
 
     if not transcript:
         raise HTTPException(status_code=404, detail="Transcript not found")
+
+    await get_owned_profile(transcript.profile_id, user, db)
 
     # Cards point at the transcript with a plain foreign key and no cascade,
     # so they have to go first or the delete fails outright. Deleting a

@@ -16,6 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
+from app.core.deps import get_current_user, get_owned_profile
+from app.models.user import User
+from app.models.profile import SubjectProfile
 from app.models.concept import Concept
 from app.models.transcript import Transcript
 from app.services.generation import CONCEPT_WINDOW_CHARS, window_chunk_indices
@@ -114,6 +117,7 @@ def _to_response(concept: Concept, card_count: int = 0) -> ConceptResponse:
 )
 async def generate_concepts(
     request: GenerateConceptsRequest,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -132,6 +136,8 @@ async def generate_concepts(
 
     if not transcript:
         raise HTTPException(status_code=404, detail="Transcript not found")
+
+    await get_owned_profile(transcript.profile_id, user, db)
 
     if not transcript.chunks:
         raise HTTPException(
@@ -167,7 +173,10 @@ async def generate_concepts(
 
 
 @router.get("/jobs/{task_id}", response_model=ConceptJobStatus)
-async def get_concept_job(task_id: str):
+async def get_concept_job(
+    task_id: str,
+    user: User = Depends(get_current_user),
+):
     """Progress for a queued concept extraction."""
     result = AsyncResult(task_id, app=celery_app)
     info = result.info if isinstance(result.info, dict) else {}
@@ -220,15 +229,23 @@ async def get_concept_job(task_id: str):
 async def list_concepts(
     transcript_id: int | None = None,
     profile_id: int | None = None,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List concepts, newest lecture order first within each transcript."""
     query = select(Concept).options(selectinload(Concept.cards))
 
+    if profile_id:
+        await get_owned_profile(profile_id, user, db)
+        query = query.where(Concept.profile_id == profile_id)
     if transcript_id:
         query = query.where(Concept.transcript_id == transcript_id)
-    if profile_id:
-        query = query.where(Concept.profile_id == profile_id)
+    if not profile_id and not user.is_admin:
+        query = query.where(
+            Concept.profile_id.in_(
+                select(SubjectProfile.id).where(SubjectProfile.user_id == user.id)
+            )
+        )
 
     result = await db.execute(
         query.order_by(Concept.transcript_id, Concept.order_index)
@@ -244,6 +261,7 @@ async def list_concepts(
 @router.get("/{concept_id}", response_model=ConceptResponse)
 async def get_concept(
     concept_id: int,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -255,5 +273,7 @@ async def get_concept(
 
     if not concept:
         raise HTTPException(status_code=404, detail="Concept not found")
+
+    await get_owned_profile(concept.profile_id, user, db)
 
     return _to_response(concept, len(concept.cards))

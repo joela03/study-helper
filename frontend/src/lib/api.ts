@@ -10,7 +10,31 @@ import {
   MaterialKind,
 } from "@/types";
 
+import { clearToken, getToken } from "@/lib/auth-store";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+/** Bearer header when signed in; omitted otherwise so login still works. */
+function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/**
+ * A 401 means the token is gone or expired. Clear it and announce it, rather
+ * than navigating from here — this module isn't a component, so it has no
+ * router, and a hard location change would throw away React state.
+ * AuthProvider listens for this and signs out through the router.
+ */
+export const AUTH_EXPIRED_EVENT = "study-helper:auth-expired";
+
+function handleUnauthorised(status: number): void {
+  if (status !== 401) return;
+  clearToken();
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  }
+}
 
 async function fetchAPI<T>(
   endpoint: string,
@@ -20,11 +44,13 @@ async function fetchAPI<T>(
     ...options,
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders(),
       ...options?.headers,
     },
   });
 
   if (!res.ok) {
+    handleUnauthorised(res.status);
     const error = await res.json().catch(() => ({ detail: "Request failed" }));
     throw new Error(error.detail || "Request failed");
   }
@@ -53,7 +79,7 @@ export async function createProfile(data: {
 }
 
 export async function deleteProfile(id: number): Promise<void> {
-  await fetch(`${API_BASE}/api/profiles/${id}`, { method: "DELETE" });
+  await fetch(`${API_BASE}/api/profiles/${id}`, { method: "DELETE", headers: authHeaders() });
 }
 
 // Transcripts
@@ -97,10 +123,12 @@ export async function uploadTranscript({
 
   const res = await fetch(`${API_BASE}/api/transcripts/`, {
     method: "POST",
+    headers: authHeaders(),
     body: formData,
   });
 
   if (!res.ok) {
+    handleUnauthorised(res.status);
     const error = await res.json().catch(() => ({ detail: "Upload failed" }));
     throw new Error(error.detail || "Upload failed");
   }
@@ -233,10 +261,12 @@ export async function createMaterial(data: {
 
   const res = await fetch(`${API_BASE}/api/materials/`, {
     method: "POST",
+    headers: authHeaders(),
     body: formData,
   });
 
   if (!res.ok) {
+    handleUnauthorised(res.status);
     const error = await res.json().catch(() => ({ detail: "Upload failed" }));
     throw new Error(error.detail || "Upload failed");
   }
@@ -256,5 +286,39 @@ export async function updateMaterial(
 }
 
 export async function deleteMaterial(id: number): Promise<void> {
-  await fetch(`${API_BASE}/api/materials/${id}`, { method: "DELETE" });
+  await fetch(`${API_BASE}/api/materials/${id}`, { method: "DELETE", headers: authHeaders() });
+}
+
+// Auth
+export interface AuthUser {
+  id: number;
+  email: string;
+  display_name: string;
+  is_admin: boolean;
+  created_at: string;
+}
+
+export async function login(
+  email: string,
+  password: string
+): Promise<{ access_token: string; user: AuthUser }> {
+  return fetchAPI("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export async function register(data: {
+  email: string;
+  display_name: string;
+  password: string;
+}): Promise<{ access_token: string; user: AuthUser }> {
+  return fetchAPI("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getMe(): Promise<AuthUser> {
+  return fetchAPI("/api/auth/me");
 }
