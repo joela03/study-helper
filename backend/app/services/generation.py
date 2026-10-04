@@ -4,7 +4,9 @@ Uses cheap models for high-frequency generation tasks.
 """
 import json
 import logging
-from typing import Optional
+import math
+import time
+from typing import Callable, Optional
 
 from anthropic import Anthropic
 from openai import OpenAI
@@ -41,6 +43,69 @@ def get_groq_client() -> Groq:
     return _groq_client
 
 
+# A full lecture's chunks concatenated can run to tens of thousands of
+# characters, which Groq's free tier rejects outright with a 413. Roughly
+# 12k characters is about 3k tokens, comfortably inside every provider here.
+MAX_CONTENT_CHARS = 12_000
+
+# Concepts use a much tighter window than flashcards. A pass yields one
+# concept, so a wide window forces the model to discard most of what it
+# sees: at 12k a single window spanned noise reduction, convolution, edge
+# detection, Fourier and the Convolution Theorem, and only one survived.
+CONCEPT_WINDOW_CHARS = 4_000
+
+
+def fit_chunks_to_budget(
+    chunks: list[str],
+    budget: int = MAX_CONTENT_CHARS,
+) -> tuple[list[str], bool]:
+    """
+    Pick chunks totalling no more than `budget` characters.
+
+    Simply taking the first few chunks would draw every card from the opening
+    slides, so when the source is too big this samples evenly across the whole
+    thing instead, keeping the original order.
+
+    Returns (selected chunks, whether anything was left out).
+    """
+    total = sum(len(c) for c in chunks)
+    if not chunks or total <= budget:
+        return list(chunks), False
+
+    average = total / len(chunks)
+    target = max(1, min(len(chunks), int(budget // average)))
+
+    if target == 1:
+        indices = [0]
+    else:
+        last = len(chunks) - 1
+        indices = sorted({round(i * last / (target - 1)) for i in range(target)})
+
+    chosen: set[int] = set()
+    used = 0
+    for i in indices:
+        if used + len(chunks[i]) <= budget:
+            chosen.add(i)
+            used += len(chunks[i])
+
+    # Chunk lengths vary, so the even spread can leave a lot of the budget
+    # unspent. Top it up with whatever else fits rather than waste it.
+    for i, chunk in enumerate(chunks):
+        if used >= budget:
+            break
+        if i not in chosen and used + len(chunk) <= budget:
+            chosen.add(i)
+            used += len(chunk)
+
+    selected = [chunks[i] for i in sorted(chosen)]
+
+    # A single chunk larger than the whole budget: take a prefix of it
+    if not selected:
+        selected = [chunks[0][:budget]]
+
+    return selected, True
+
+
 FLASHCARD_SYSTEM_PROMPT = """You are an expert educator creating flashcards for university-level study.
 
 Generate flashcards from the provided content. Each flashcard should:
@@ -55,10 +120,99 @@ Example: [{"question": "What is backpropagation?", "answer": "An algorithm for t
 Only output valid JSON, no additional text."""
 
 
+PROGRESSIVE_SYSTEM_PROMPT = """You are an expert educator building a *sequence* of flashcards that teaches a university-level topic in the order it should be learned.
+
+You are shown one section of the material at a time, in the order it was taught, along with the cards already written for earlier sections.
+
+Each flashcard should:
+- Have a clear, specific question that tests understanding (not just recall)
+- Have a concise but complete answer
+- Be self-contained: a student should be able to answer it without having the lecture in front of them
+
+Because the cards form a sequence:
+- Cover a concept's prerequisites before the concepts that depend on them
+- Where this section develops an idea from an earlier card, build on it explicitly — name the earlier concept and extend it, rather than re-teaching it from scratch
+- Never restate a question that has already been asked
+- Prefer questions that connect this section to what came before over questions that treat it in isolation
+
+Output format: Return a JSON array of flashcard objects with "question" and "answer" fields.
+Example: [{"question": "How does backpropagation use the chain rule introduced earlier?", "answer": "It applies the chain rule repeatedly from the loss backwards, multiplying local gradients at each layer to get the gradient of the loss with respect to every weight."}]
+
+Only output valid JSON, no additional text."""
+
+# How many previously written questions to show the model as context. Enough
+# to avoid repetition and give it something to build on, without the prompt
+# growing unbounded as the sequence gets longer.
+PRIOR_QUESTION_CONTEXT = 12
+
+
+def _max_tokens_for(num_cards: int) -> int:
+    """
+    Output budget per call.
+
+    Scales with the number of cards asked for, but never past
+    LLM_MAX_OUTPUT_TOKENS: providers meter the *expected* output, and Groq's
+    free tier rejects a request outright if that estimate exceeds its
+    per-minute allowance. Asking for more than the tier permits fails the
+    whole call rather than returning a shorter answer.
+    """
+    return min(settings.LLM_MAX_OUTPUT_TOKENS, max(400, num_cards * 350))
+
+
+def _call_with_retry(fn, attempts: int = 3, base_delay: float = 20.0):
+    """
+    Retry a provider call through per-minute rate limits.
+
+    The free tier's allowance refills over a minute, so backing off and
+    retrying usually succeeds where failing immediately loses the window's
+    work entirely.
+    """
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            status = getattr(e, "status_code", None)
+            if status != 429 and "rate_limit" not in str(e).lower():
+                raise
+            last_error = e
+            if attempt < attempts - 1:
+                delay = base_delay * (attempt + 1)
+                logger.warning(
+                    f"Rate limited, waiting {delay:.0f}s before retry "
+                    f"{attempt + 2}/{attempts}"
+                )
+                time.sleep(delay)
+    raise last_error
+
+
+def _build_user_prompt(
+    content: str,
+    num_cards: int,
+    prior_questions: list[str] | None = None,
+) -> str:
+    parts = []
+
+    if prior_questions:
+        listed = "\n".join(f"- {q}" for q in prior_questions)
+        parts.append(
+            "Flashcards already written for earlier sections:\n"
+            f"{listed}\n\n"
+            "Do not repeat any of these. Where this section develops one of "
+            "those ideas further, write the new card so it builds on it.\n"
+        )
+
+    parts.append(f"Generate {num_cards} flashcards from this content:\n\n{content}\n")
+    parts.append("Remember: Output only valid JSON array.")
+    return "\n".join(parts)
+
+
 def generate_flashcards_anthropic(
     content: str,
     num_cards: int = 5,
     model: str = "claude-3-haiku-20240307",
+    system_prompt: str = FLASHCARD_SYSTEM_PROMPT,
+    prior_questions: list[str] | None = None,
 ) -> list[dict]:
     """
     Generate flashcards using Anthropic's Claude API.
@@ -73,17 +227,13 @@ def generate_flashcards_anthropic(
     """
     client = get_anthropic_client()
 
-    user_prompt = f"""Generate {num_cards} flashcards from this content:
-
-{content}
-
-Remember: Output only valid JSON array."""
+    user_prompt = _build_user_prompt(content, num_cards, prior_questions)
 
     try:
         response = client.messages.create(
             model=model,
-            max_tokens=2000,
-            system=FLASHCARD_SYSTEM_PROMPT,
+            max_tokens=_max_tokens_for(num_cards),
+            system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
         )
 
@@ -117,6 +267,8 @@ def generate_flashcards_openai(
     content: str,
     num_cards: int = 5,
     model: str = "gpt-4o-mini",
+    system_prompt: str = FLASHCARD_SYSTEM_PROMPT,
+    prior_questions: list[str] | None = None,
 ) -> list[dict]:
     """
     Generate flashcards using OpenAI's API.
@@ -131,18 +283,14 @@ def generate_flashcards_openai(
     """
     client = get_openai_client()
 
-    user_prompt = f"""Generate {num_cards} flashcards from this content:
-
-{content}
-
-Remember: Output only valid JSON array."""
+    user_prompt = _build_user_prompt(content, num_cards, prior_questions)
 
     try:
         response = client.chat.completions.create(
             model=model,
-            max_tokens=2000,
+            max_tokens=_max_tokens_for(num_cards),
             messages=[
-                {"role": "system", "content": FLASHCARD_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
@@ -183,6 +331,8 @@ def generate_flashcards_groq(
     content: str,
     num_cards: int = 5,
     model: str = "qwen/qwen3.8-27b",
+    system_prompt: str = FLASHCARD_SYSTEM_PROMPT,
+    prior_questions: list[str] | None = None,
 ) -> list[dict]:
     """
     Generate flashcards using Groq's API (free tier).
@@ -200,18 +350,14 @@ def generate_flashcards_groq(
     """
     client = get_groq_client()
 
-    user_prompt = f"""Generate {num_cards} flashcards from this content:
-
-{content}
-
-Remember: Output only valid JSON array."""
+    user_prompt = _build_user_prompt(content, num_cards, prior_questions)
 
     try:
         response = client.chat.completions.create(
             model=model,
-            max_tokens=2000,
+            max_tokens=_max_tokens_for(num_cards),
             messages=[
-                {"role": "system", "content": FLASHCARD_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.7,
@@ -255,6 +401,8 @@ def generate_flashcards(
     content: str,
     num_cards: int = 5,
     provider: str = "groq",
+    system_prompt: str = FLASHCARD_SYSTEM_PROMPT,
+    prior_questions: list[str] | None = None,
 ) -> list[dict]:
     """
     Generate flashcards using the specified provider.
@@ -263,6 +411,10 @@ def generate_flashcards(
         content: Source text to generate flashcards from
         num_cards: Target number of flashcards
         provider: "groq", "anthropic", or "openai"
+        system_prompt: Which prompt to use; pass PROGRESSIVE_SYSTEM_PROMPT
+            when generating one section of an ordered sequence
+        prior_questions: Questions already written, so the model can build on
+            them instead of repeating them
 
     Returns:
         List of {"question": str, "answer": str} dicts
@@ -270,17 +422,406 @@ def generate_flashcards(
     if provider == "groq":
         if not settings.GROQ_API_KEY:
             raise ValueError("GROQ_API_KEY not configured")
-        return generate_flashcards_groq(content, num_cards)
+        fn = generate_flashcards_groq
     elif provider == "anthropic":
         if not settings.ANTHROPIC_API_KEY:
             raise ValueError("ANTHROPIC_API_KEY not configured")
-        return generate_flashcards_anthropic(content, num_cards)
+        fn = generate_flashcards_anthropic
     elif provider == "openai":
         if not settings.OPENAI_API_KEY:
             raise ValueError("OPENAI_API_KEY not configured")
-        return generate_flashcards_openai(content, num_cards)
+        fn = generate_flashcards_openai
     else:
         raise ValueError(f"Unknown provider: {provider}")
+
+    return fn(
+        content,
+        num_cards,
+        system_prompt=system_prompt,
+        prior_questions=prior_questions,
+    )
+
+
+CONCEPT_SYSTEM_PROMPT = """You are an expert educator condensing a university lecture into the small number of ideas a student actually needs to hold in their head.
+
+You are shown one section of the lecture at a time, in teaching order, along with the concepts already extracted from earlier sections.
+
+For the concept, produce:
+- "title": 2-4 words, the label on a tab. e.g. "Perceptron & MLP", "Activation functions"
+- "headline": a short line framing the idea, e.g. "From single perceptron to multi-layer perceptron"
+- "definition": ONE sentence. What it is, plainly.
+- "intuition": an analogy or mental picture that makes it click. Concrete, everyday where possible.
+- "mechanism": how it actually works, and how it builds on the earlier concepts. Include the key formula or relationship if there is one.
+- "limitation": the caveat, failure case or boundary a student should mention to show real understanding.
+- "relevance": one line on where this sits in the module and what it connects to — what it builds on, what builds on it, and how it tends to be examined if the course context says.
+- "questions": exactly 2 questions. Each is {"text": ..., "type": ..., "answer": ...} where type is "A" to explain a concept or "B" for an applied scenario ("You need to ... what would you do?"), and answer is an outline of what a good answer covers, in 1-3 sentences. Include at least one type B where the material allows.
+- "followups": exactly 2 things an examiner would probe after a confident answer, phrased as the student anticipating them. e.g. "If I say 'hidden layers add power', they might ask: why not just add more neurons to one layer instead?"
+
+Rules:
+- Extract exactly ONE concept: the single most important idea in this section. Do not invent material.
+- Keep every field tight: definition one sentence, intuition and mechanism two sentences at most, limitation one sentence.
+- Do not repeat a concept already extracted. Where this section extends one, say so in "mechanism".
+- Write for someone revising, not for a textbook. Short sentences.
+
+Output format: a JSON array containing ONE concept object with exactly those keys. Only output valid JSON, no additional text."""
+
+
+def _parse_json_array(response_text: str) -> list:
+    """
+    Parse a JSON array, salvaging what completed if the response was cut off.
+
+    Output limits truncate mid-array, which makes json.loads fail on the whole
+    thing and lose concepts that were already fully written. Decoding object by
+    object keeps those.
+    """
+    text = response_text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:-1])
+
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, list) else [parsed]
+    except json.JSONDecodeError:
+        pass
+
+    decoder = json.JSONDecoder()
+    objects: list = []
+    index = text.find("{")
+    while index != -1:
+        try:
+            obj, end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            break
+        if isinstance(obj, dict):
+            objects.append(obj)
+        index = text.find("{", end)
+
+    if not objects:
+        raise json.JSONDecodeError("no complete objects in response", text, 0)
+
+    logger.warning(f"Response truncated; salvaged {len(objects)} complete objects")
+    return objects
+
+
+# Course context rides along in every concept prompt, so it has to stay small
+# next to the ~4k of lecture content and the free tier's output allowance.
+COURSE_CONTEXT_CHARS = 1_800
+
+
+def build_course_context(materials: list[tuple[str, str, str]]) -> str:
+    """
+    Condense a subject's materials into a short standing brief.
+
+    Takes (kind, title, content) and returns a bounded string. The outline
+    gets the most room — it says what the module is actually about — while
+    papers and problem sheets contribute a sample so the model can see how
+    the subject gets examined without the prompt ballooning.
+    """
+    if not materials:
+        return ""
+
+    # Outline first: it frames everything else
+    order = {"outline": 0, "problem_sheet": 1, "past_paper": 2, "notes": 3}
+    ranked = sorted(materials, key=lambda m: order.get(m[0], 4))
+
+    budget = COURSE_CONTEXT_CHARS
+    parts: list[str] = []
+
+    for kind, title, content in ranked:
+        if budget <= 200:
+            break
+        text = " ".join((content or "").split())
+        if not text:
+            continue
+        share = min(len(text), max(200, budget // 2))
+        parts.append(f"[{kind}] {title}: {text[:share]}")
+        budget -= share
+
+    if not parts:
+        return ""
+
+    return (
+        "Context about this course, for framing only — do not invent "
+        "material from it:\n" + "\n".join(parts) + "\n"
+    )
+
+
+def _concepts_from_provider(
+    content: str,
+    provider: str,
+    prior_titles: list[str],
+    course_context: str = "",
+) -> list[dict]:
+    """One call: a section of lecture in, structured concepts out."""
+    prompt_parts = []
+    if course_context:
+        prompt_parts.append(course_context)
+    if prior_titles:
+        listed = "\n".join(f"- {t}" for t in prior_titles)
+        prompt_parts.append(
+            f"Concepts already extracted from earlier sections:\n{listed}\n\n"
+            "Do not repeat these. Where this section extends one, build on it.\n"
+        )
+    prompt_parts.append(f"Extract the concepts from this section:\n\n{content}\n")
+    prompt_parts.append("Remember: Output only valid JSON array.")
+    user_prompt = "\n".join(prompt_parts)
+
+    if provider == "groq":
+        if not settings.GROQ_API_KEY:
+            raise ValueError("GROQ_API_KEY not configured")
+        response = _call_with_retry(lambda: get_groq_client().chat.completions.create(
+            model="qwen/qwen3.8-27b",
+            max_tokens=settings.LLM_MAX_OUTPUT_TOKENS,
+            messages=[
+                {"role": "system", "content": CONCEPT_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.6,
+        ))
+        raw = response.choices[0].message.content
+    elif provider == "anthropic":
+        if not settings.ANTHROPIC_API_KEY:
+            raise ValueError("ANTHROPIC_API_KEY not configured")
+        response = get_anthropic_client().messages.create(
+            model="claude-3-haiku-20240307",
+            max_tokens=settings.LLM_MAX_OUTPUT_TOKENS,
+            system=CONCEPT_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        raw = response.content[0].text
+    elif provider == "openai":
+        if not settings.OPENAI_API_KEY:
+            raise ValueError("OPENAI_API_KEY not configured")
+        response = get_openai_client().chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=settings.LLM_MAX_OUTPUT_TOKENS,
+            messages=[
+                {"role": "system", "content": CONCEPT_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        raw = response.choices[0].message.content
+    else:
+        raise ValueError(f"Unknown provider: {provider}")
+
+    return _parse_json_array(raw)
+
+
+def _clean_concept(raw: dict) -> dict | None:
+    """Keep only well-formed concepts; a missing title makes one useless."""
+    if not isinstance(raw, dict):
+        return None
+
+    title = str(raw.get("title") or "").strip()
+    if not title:
+        return None
+
+    questions = []
+    for q in raw.get("questions") or []:
+        if isinstance(q, dict) and str(q.get("text") or "").strip():
+            qtype = str(q.get("type") or "A").strip().upper()
+            questions.append({
+                "text": str(q["text"]).strip(),
+                "type": "B" if qtype == "B" else "A",
+                "answer": str(q.get("answer") or "").strip(),
+            })
+        elif isinstance(q, str) and q.strip():
+            questions.append({"text": q.strip(), "type": "A", "answer": ""})
+
+    followups = [
+        str(f).strip()
+        for f in (raw.get("followups") or [])
+        if str(f).strip()
+    ]
+
+    def field(name: str) -> str | None:
+        value = raw.get(name)
+        return str(value).strip() if value else None
+
+    return {
+        "title": title[:255],
+        "headline": (field("headline") or "")[:512] or None,
+        "relevance": field("relevance"),
+        "definition": field("definition"),
+        "intuition": field("intuition"),
+        "mechanism": field("mechanism"),
+        "limitation": field("limitation"),
+        "questions": questions,
+        "followups": followups,
+    }
+
+
+def window_chunk_indices(
+    chunks: list[str],
+    window_chars: int = CONCEPT_WINDOW_CHARS,
+) -> list[list[int]]:
+    """Same split as window_chunks, but returns indices so coverage is tracked."""
+    windows: list[list[int]] = []
+    current: list[int] = []
+    used = 0
+
+    for i, chunk in enumerate(chunks):
+        if current and used + len(chunk) > window_chars:
+            windows.append(current)
+            current, used = [], 0
+        current.append(i)
+        used += len(chunk)
+
+    if current:
+        windows.append(current)
+
+    return windows
+
+
+def generate_concepts_progressive(
+    chunks: list[str],
+    provider: str = "groq",
+    window_chars: int = CONCEPT_WINDOW_CHARS,
+    max_concepts: int = 60,
+    on_progress: Callable[[int, int, int], None] | None = None,
+    on_concept: Callable[[dict, list[int]], None] | None = None,
+    skip_chunks: set[int] | None = None,
+    prior_titles: list[str] | None = None,
+    course_context: str = "",
+) -> list[dict]:
+    """
+    Walk the lecture in order, condensing each window into concepts.
+
+    Each pass sees the titles already extracted, so the set reads front to
+    back without repeating itself. One call per window, same as flashcard
+    generation — the richer structure comes from the response, not more calls.
+    """
+    index_windows = window_chunk_indices(chunks, window_chars)
+    if not index_windows:
+        return []
+
+    # A re-run only visits windows holding chunks no concept has claimed yet,
+    # so regenerating adds to the set instead of replacing it.
+    covered = skip_chunks or set()
+    pending = [w for w in index_windows if any(i not in covered for i in w)]
+
+    concepts: list[dict] = []
+    seen: set[str] = {t.strip().lower() for t in (prior_titles or [])}
+
+    for position, window in enumerate(pending, 1):
+        if len(concepts) >= max_concepts:
+            break
+
+        if on_progress:
+            on_progress(position, len(pending), len(concepts))
+
+        recent = list(seen)[-PRIOR_QUESTION_CONTEXT:]
+
+        try:
+            raw_concepts = _concepts_from_provider(
+                content="\n\n".join(chunks[i] for i in window),
+                provider=provider,
+                prior_titles=recent,
+                course_context=course_context,
+            )
+        except json.JSONDecodeError:
+            logger.error(f"Concept pass {position}/{len(pending)} returned invalid JSON")
+            continue
+        except Exception:
+            # One bad window shouldn't lose the concepts already extracted
+            logger.exception(f"Concept pass {position}/{len(pending)} failed, continuing")
+            continue
+
+        for raw in raw_concepts:
+            cleaned = _clean_concept(raw)
+            if not cleaned:
+                continue
+            key = cleaned["title"].strip().lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            concepts.append(cleaned)
+            # Handed over straight away so it can be saved and studied while
+            # the rest of the lecture is still being worked through
+            if on_concept:
+                on_concept(cleaned, window)
+            if len(concepts) >= max_concepts:
+                break
+
+    return concepts
+
+
+def window_chunks(
+    chunks: list[str],
+    window_chars: int = MAX_CONTENT_CHARS,
+) -> list[list[str]]:
+    """Split ordered chunks into consecutive windows under the char budget."""
+    windows: list[list[str]] = []
+    current: list[str] = []
+    used = 0
+
+    for chunk in chunks:
+        if current and used + len(chunk) > window_chars:
+            windows.append(current)
+            current, used = [], 0
+        current.append(chunk)
+        used += len(chunk)
+
+    if current:
+        windows.append(current)
+
+    return windows
+
+
+def generate_flashcards_progressive(
+    chunks: list[str],
+    total_cards: int,
+    provider: str = "groq",
+    window_chars: int = MAX_CONTENT_CHARS,
+) -> list[dict]:
+    """
+    Walk the material in order, generating cards window by window.
+
+    Each pass is told what has already been asked, so the deck builds up
+    roughly in teaching order: foundations first, then the ideas that depend
+    on them, with later cards extending earlier ones rather than repeating.
+
+    This also covers the whole source instead of one budget's worth of it,
+    which is what caps the number of usable cards in a single-shot call.
+    """
+    windows = window_chunks(chunks, window_chars)
+    if not windows:
+        return []
+
+    per_window = max(1, math.ceil(total_cards / len(windows)))
+
+    cards: list[dict] = []
+    seen: set[str] = set()
+
+    for index, window in enumerate(windows, 1):
+        remaining = total_cards - len(cards)
+        if remaining <= 0:
+            break
+
+        prior = [c["question"] for c in cards][-PRIOR_QUESTION_CONTEXT:]
+
+        try:
+            batch = generate_flashcards(
+                content="\n\n".join(window),
+                num_cards=min(per_window, remaining),
+                provider=provider,
+                system_prompt=PROGRESSIVE_SYSTEM_PROMPT,
+                prior_questions=prior,
+            )
+        except Exception:
+            # One bad window shouldn't lose the cards already written
+            logger.exception(f"Pass {index}/{len(windows)} failed, continuing")
+            continue
+
+        for card in batch:
+            key = card["question"].strip().lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            cards.append(card)
+
+    return cards[:total_cards]
 
 
 def get_available_provider() -> str:

@@ -11,7 +11,13 @@ from app.core.database import get_db
 from app.models.card import Card, CardType
 from app.models.transcript import Transcript, TranscriptChunk
 from app.models.profile import SubjectProfile
-from app.services.generation import generate_flashcards, get_available_provider
+from app.services.generation import (
+    fit_chunks_to_budget,
+    generate_flashcards,
+    generate_flashcards_progressive,
+    get_available_provider,
+    window_chunks,
+)
 from app.services.embeddings import generate_embedding
 
 router = APIRouter()
@@ -21,14 +27,14 @@ class GenerateFromTextRequest(BaseModel):
     """Generate flashcards from raw text."""
     profile_id: int
     content: str = Field(..., min_length=50, description="Text to generate flashcards from")
-    num_cards: int = Field(5, ge=1, le=20)
+    num_cards: int = Field(10, ge=1, le=60)
     save: bool = Field(True, description="Save generated cards to database")
 
 
 class GenerateFromTranscriptRequest(BaseModel):
     """Generate flashcards from a transcript's chunks."""
     transcript_id: int
-    num_cards: int = Field(5, ge=1, le=20)
+    num_cards: int = Field(10, ge=1, le=60)
     save: bool = Field(True, description="Save generated cards to database")
 
 
@@ -36,7 +42,7 @@ class GenerateFromSearchRequest(BaseModel):
     """Generate flashcards from search results."""
     profile_id: int
     query: str = Field(..., min_length=3)
-    num_cards: int = Field(5, ge=1, le=20)
+    num_cards: int = Field(10, ge=1, le=60)
     num_chunks: int = Field(3, ge=1, le=10, description="Number of relevant chunks to use")
     save: bool = Field(True, description="Save generated cards to database")
 
@@ -138,16 +144,20 @@ async def generate_from_transcript(
             detail="Transcript has no processed chunks. Wait for processing to complete."
         )
 
-    # Combine chunk content
-    content = "\n\n".join(
-        chunk.content for chunk in sorted(transcript.chunks, key=lambda c: c.chunk_index)
-    )
+    # Walk the lecture in order, a window at a time, so the deck covers all of
+    # it and later cards build on the ones already written
+    ordered = [
+        chunk.content
+        for chunk in sorted(transcript.chunks, key=lambda c: c.chunk_index)
+    ]
+    passes = len(window_chunks(ordered))
+    source = f"transcript:{transcript.id} ({passes} pass{'es' if passes != 1 else ''} over {len(ordered)} chunks)"
 
     try:
         provider = get_available_provider()
-        raw_cards = generate_flashcards(
-            content=content,
-            num_cards=request.num_cards,
+        raw_cards = generate_flashcards_progressive(
+            chunks=ordered,
+            total_cards=request.num_cards,
             provider=provider,
         )
     except ValueError as e:
@@ -186,7 +196,7 @@ async def generate_from_transcript(
 
     return GenerateResponse(
         cards=generated,
-        source=f"transcript:{transcript.id}",
+        source=source,
         provider=provider,
     )
 
@@ -232,8 +242,9 @@ async def generate_from_search(
             detail="No content found for this profile. Upload and process transcripts first."
         )
 
-    # Combine relevant chunks
-    content = "\n\n".join(row.content for row in rows)
+    # Combine relevant chunks, bounded in case the matches are all long ones
+    matched, _ = fit_chunks_to_budget([row.content for row in rows])
+    content = "\n\n".join(matched)
 
     try:
         provider = get_available_provider()

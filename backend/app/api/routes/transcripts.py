@@ -11,6 +11,11 @@ from app.core.database import get_db
 from app.models.profile import SubjectProfile
 from app.models.transcript import Transcript, TranscriptStatus
 from app.schemas.transcript import TranscriptResponse, TranscriptListResponse
+from app.services.extraction import (
+    extract_transcript_text,
+    is_legacy_word_file,
+    is_transcript_file,
+)
 from app.tasks.transcription import process_transcript
 
 router = APIRouter()
@@ -22,8 +27,24 @@ async def create_transcript(
     title: str = Form(...),
     document: UploadFile | None = File(None),
     audio: UploadFile | None = File(None),
+    transcript_text: str | None = Form(None),
+    transcript_file: UploadFile | None = File(None),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Create a transcript from any combination of a document and one source of
+    spoken content.
+
+    Spoken content can arrive three ways, and all three end up in audio_text
+    so the rest of the pipeline is unchanged:
+
+    - transcript_text: pasted in, already transcribed elsewhere (Panopto)
+    - transcript_file: a .txt/.md/.docx export of the same
+    - audio: an actual recording, which Whisper transcribes on the worker
+
+    A text-looking file sent in the audio field is re-routed here rather than
+    handed to Whisper, so the caller does not have to get the field right.
+    """
     # Verify profile exists
     result = await db.execute(
         select(SubjectProfile).where(SubjectProfile.id == profile_id)
@@ -31,10 +52,42 @@ async def create_transcript(
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    if not document and not audio:
+    pasted_text = transcript_text.strip() if transcript_text else None
+
+    # Legacy .doc can be read by neither python-docx nor Whisper
+    for candidate in (audio, transcript_file):
+        if candidate and is_legacy_word_file(candidate.filename):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Legacy .doc files can't be read. "
+                    "Save it as .docx or .txt, or paste the text in."
+                ),
+            )
+
+    # Background check: a transcript sent in the audio field is still a
+    # transcript. Re-route it instead of sending a text file to Whisper.
+    if audio and is_transcript_file(audio.filename) and not transcript_file:
+        transcript_file = audio
+        audio = None
+
+    if transcript_file and not is_transcript_file(transcript_file.filename):
         raise HTTPException(
             status_code=400,
-            detail="At least one of document or audio must be provided"
+            detail="Transcript files must be .txt, .md or .docx",
+        )
+
+    sources = [s for s in (audio, pasted_text, transcript_file) if s]
+    if not document and not sources:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide a document, an audio file, or a transcript",
+        )
+
+    if len(sources) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide only one of audio, transcript_text or transcript_file",
         )
 
     # Create transcript record
@@ -42,6 +95,7 @@ async def create_transcript(
         profile_id=profile_id,
         title=title,
         status=TranscriptStatus.PENDING,
+        audio_text=pasted_text,
     )
     db.add(transcript)
     await db.commit()
@@ -64,6 +118,30 @@ async def create_transcript(
             content = await audio.read()
             f.write(content)
         transcript.audio_path = str(audio_path)
+
+    if transcript_file:
+        saved = upload_dir / transcript_file.filename
+        with open(saved, "wb") as f:
+            content = await transcript_file.read()
+            f.write(content)
+
+        # Read it now rather than on the worker: these are small text files,
+        # and failing here gives the user an error instead of a failed job.
+        try:
+            extracted = extract_transcript_text(str(saved)).strip()
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Couldn't read that transcript file: {e}",
+            )
+
+        if not extracted:
+            raise HTTPException(
+                status_code=400,
+                detail="That transcript file appears to be empty",
+            )
+
+        transcript.audio_text = extracted
 
     await db.commit()
 
