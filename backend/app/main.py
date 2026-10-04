@@ -6,14 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import profiles, cards, transcripts, health, search, generate, concepts, materials
 from app.core.config import settings
 from app.core.database import engine
-from app.models import base
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: create tables (use alembic migrations in production)
-    async with engine.begin() as conn:
-        await conn.run_sync(base.Base.metadata.create_all)
+    # Schema is owned by Alembic — run `alembic upgrade head` before start.
+    # create_all only ever created missing tables and never altered existing
+    # ones, so column changes silently didn't apply.
 
     # Start scheduler for daily reminders
     from app.tasks.scheduler import start_scheduler, stop_scheduler
