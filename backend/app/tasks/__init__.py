@@ -6,6 +6,10 @@ celery_app = Celery(
     "study_helper",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
+    # Declared explicitly: autodiscover_tasks looks for a submodule *named*
+    # "tasks" (i.e. app.tasks.tasks), which does not exist here, so the
+    # worker started with an empty registry and discarded every message.
+    include=["app.tasks.transcription"],
 )
 
 celery_app.conf.update(
