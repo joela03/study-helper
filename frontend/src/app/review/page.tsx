@@ -3,9 +3,10 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Card } from "@/types";
-import { getDueCards, ReviewResponse } from "@/lib/api";
+import { Card, Concept } from "@/types";
+import { getDueCards, getConcepts, ReviewResponse } from "@/lib/api";
 import FlashcardReview from "@/components/FlashcardReview";
+import ConceptPanel from "@/components/ConceptPanel";
 import { useProfiles } from "@/lib/profiles-context";
 import { accentFor } from "@/lib/accents";
 
@@ -21,11 +22,17 @@ function ReviewSession() {
   const [loading, setLoading] = useState(true);
   const [completed, setCompleted] = useState(0);
   const [failed, setFailed] = useState(0);
+  const [concepts, setConcepts] = useState<Concept[]>([]);
+  const [showConcept, setShowConcept] = useState(false);
 
   const fetchDueCards = useCallback(async () => {
     try {
-      const res = await getDueCards(profileId);
+      const [res, conceptRes] = await Promise.all([
+        getDueCards(profileId),
+        getConcepts(profileId ? { profileId } : {}),
+      ]);
       setCards(res.cards);
+      setConcepts(conceptRes.concepts);
     } catch (error) {
       console.error("Failed to fetch due cards:", error);
     } finally {
@@ -43,6 +50,7 @@ function ReviewSession() {
 
   function handleReviewed(response: ReviewResponse) {
     setCompleted(completed + 1);
+    setShowConcept(false);
 
     if (response.failed) {
       // Card was failed - add it back to the end of the queue
@@ -66,6 +74,7 @@ function ReviewSession() {
   }
 
   function handleSkip() {
+    setShowConcept(false);
     // Move skipped card to end of queue
     const updatedCards = [...cards];
     const skippedCard = updatedCards.splice(currentIndex, 1)[0];
@@ -110,6 +119,8 @@ function ReviewSession() {
   const currentCard = cards[currentIndex];
   const remaining = cards.length - currentIndex;
   const accent = subject ? accentFor(subject.id) : null;
+  const cardConcept =
+    concepts.find((c) => c.id === currentCard.concept_id) ?? null;
 
   return (
     <div>
@@ -135,6 +146,30 @@ function ReviewSession() {
           />
         </div>
       </div>
+
+      {cardConcept && (
+        <div className="mx-auto mt-10 max-w-2xl">
+          <button
+            onClick={() => setShowConcept(!showConcept)}
+            className="font-hand text-sm text-graphite underline decoration-rule decoration-2 underline-offset-4 hover:text-ink"
+          >
+            {showConcept
+              ? "hide the explainer"
+              : `remind me how ${cardConcept.title} works`}
+          </button>
+
+          {/* Collapsed by default: reading it first would hand you the answer */}
+          {showConcept && (
+            <div className="mt-4">
+              <ConceptPanel
+                concept={cardConcept}
+                accent={accentFor(currentCard.profile_id)}
+                explainerOnly
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="mt-12">
         <FlashcardReview

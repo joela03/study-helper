@@ -18,6 +18,7 @@ class CardResponse(BaseModel):
     id: int
     profile_id: int
     transcript_id: Optional[int]
+    concept_id: Optional[int] = None
     card_type: CardType
     question: str
     answer: str

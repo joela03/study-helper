@@ -9,6 +9,7 @@ from app.models.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.profile import SubjectProfile
+    from app.models.concept import Concept
 
 
 class TranscriptStatus(str, enum.Enum):
@@ -48,6 +49,9 @@ class Transcript(Base, TimestampMixin):
     profile: Mapped["SubjectProfile"] = relationship("SubjectProfile", back_populates="transcripts")
     chunks: Mapped[list["TranscriptChunk"]] = relationship(
         "TranscriptChunk", back_populates="transcript", cascade="all, delete-orphan"
+    )
+    concepts: Mapped[list["Concept"]] = relationship(
+        "Concept", back_populates="transcript", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

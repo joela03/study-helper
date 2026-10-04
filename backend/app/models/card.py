@@ -9,6 +9,7 @@ from app.models.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.profile import SubjectProfile
+    from app.models.concept import Concept
 
 
 class CardType(str, enum.Enum):
@@ -25,6 +26,8 @@ class Card(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(primary_key=True)
     profile_id: Mapped[int] = mapped_column(ForeignKey("subject_profiles.id"))
     transcript_id: Mapped[Optional[int]] = mapped_column(ForeignKey("transcripts.id"))
+    # Which idea this card tests; set when cards come from concept generation
+    concept_id: Mapped[Optional[int]] = mapped_column(ForeignKey("concepts.id"))
 
     card_type: Mapped[CardType] = mapped_column(Enum(CardType), default=CardType.FLASHCARD)
 
@@ -40,6 +43,7 @@ class Card(Base, TimestampMixin):
 
     # Relationships
     profile: Mapped["SubjectProfile"] = relationship("SubjectProfile", back_populates="cards")
+    concept: Mapped[Optional["Concept"]] = relationship("Concept", back_populates="cards")
 
     def __repr__(self) -> str:
         return f"<Card {self.id} ({self.card_type.value})>"

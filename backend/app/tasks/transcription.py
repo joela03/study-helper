@@ -60,7 +60,14 @@ def process_transcript(self, transcript_id: int):
                     logger.warning(f"Document extraction failed: {e}")
 
             # Step 2: Transcribe audio
-            audio_text = None
+            # Already-transcribed text (pasted from Panopto etc.) arrives in
+            # audio_text at creation; keep it and skip Whisper.
+            audio_text = transcript.audio_text
+            if audio_text:
+                logger.info(
+                    f"Using supplied transcript ({len(audio_text)} characters), "
+                    "skipping transcription"
+                )
             if transcript.audio_path:
                 logger.info(f"Transcribing audio: {transcript.audio_path}")
                 try:
@@ -76,7 +83,9 @@ def process_transcript(self, transcript_id: int):
             db.commit()
 
             if not merged_text:
-                raise ValueError("No text extracted from document or audio")
+                raise ValueError(
+                    "No text from document, audio, or supplied transcript"
+                )
 
             logger.info(f"Merged text: {len(merged_text)} characters")
 

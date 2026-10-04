@@ -11,6 +11,8 @@ import {
   generateFromTranscript,
 } from "@/lib/api";
 import UploadForm from "@/components/UploadForm";
+import StudyBoard from "@/components/StudyBoard";
+import CourseMaterials from "@/components/CourseMaterials";
 import { accentFor, rotationFor, liftOffsetFor } from "@/lib/accents";
 
 const STATUS_TONE: Record<Transcript["status"], string> = {
@@ -56,7 +58,7 @@ export default function ProfileDetailPage() {
     try {
       await generateFromTranscript({
         transcript_id: transcriptId,
-        num_cards: 5,
+        num_cards: 20,
       });
       const cardsRes = await getCards(profileId);
       setCards(cardsRes.cards);
@@ -125,6 +127,25 @@ export default function ProfileDetailPage() {
           )}
         </p>
       </header>
+
+      <section className="mt-11">
+        <h2 className="font-hand text-sm text-graphite">Course materials</h2>
+        <div className="mt-3">
+          <CourseMaterials profileId={profileId} accent={accent} />
+        </div>
+      </section>
+
+      <section className="mt-11">
+        <h2 className="font-hand text-sm text-graphite">Study</h2>
+        <div className="mt-4">
+          <StudyBoard
+            profileId={profileId}
+            accent={accent}
+            transcripts={transcripts}
+            onCardsCreated={fetchData}
+          />
+        </div>
+      </section>
 
       <div className="mt-11 grid grid-cols-1 gap-12 lg:grid-cols-2">
         {/* Left: transcripts, stacked like filed sheets */}

@@ -9,7 +9,7 @@ celery_app = Celery(
     # Declared explicitly: autodiscover_tasks looks for a submodule *named*
     # "tasks" (i.e. app.tasks.tasks), which does not exist here, so the
     # worker started with an empty registry and discarded every message.
-    include=["app.tasks.transcription"],
+    include=["app.tasks.transcription", "app.tasks.concepts"],
 )
 
 celery_app.conf.update(

@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -10,6 +10,8 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models.profile import SubjectProfile
 from app.models.transcript import Transcript, TranscriptStatus
+from app.models.card import Card
+from app.models.concept import Concept
 from app.schemas.transcript import TranscriptResponse, TranscriptListResponse
 from app.services.extraction import (
     extract_transcript_text,
@@ -247,6 +249,15 @@ async def delete_transcript(
 
     if not transcript:
         raise HTTPException(status_code=404, detail="Transcript not found")
+
+    # Cards point at the transcript with a plain foreign key and no cascade,
+    # so they have to go first or the delete fails outright. Deleting a
+    # lecture discards the cards made from it, review history included.
+    await db.execute(delete(Card).where(Card.transcript_id == transcript_id))
+
+    # Chunks and concepts cascade from the relationship, but clearing them
+    # explicitly keeps the ordering obvious
+    await db.execute(delete(Concept).where(Concept.transcript_id == transcript_id))
 
     # Clean up files
     if transcript.document_path and os.path.exists(transcript.document_path):
