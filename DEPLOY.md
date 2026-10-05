@@ -66,10 +66,18 @@ openssl rand -hex 32      # SECRET_KEY
 openssl rand -base64 24   # POSTGRES_PASSWORD
 ```
 
-Then:
+Compose only auto-loads a file named exactly `.env`, so **every** command
+needs `--env-file`, not just `up`. Save yourself the repetition:
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+echo "alias dcp='docker compose -f docker-compose.prod.yml --env-file .env.production'" >> ~/.bashrc
+source ~/.bashrc
+```
+
+The rest of this guide uses `dcp`. Then:
+
+```bash
+dcp up -d --build
 ```
 
 Expect **15–25 minutes** on 2 vCPUs. Torch and the baked embedding model
@@ -78,7 +86,7 @@ dominate; later deploys reuse those layers and are far quicker.
 Watch it:
 
 ```bash
-docker compose -f docker-compose.prod.yml logs -f
+dcp logs -f
 ```
 
 Migrations run automatically before the API accepts traffic.
@@ -95,14 +103,13 @@ REQUIRE_INVITE=false
 ```
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env.production up -d backend
+dcp up -d backend
 ```
 
 Register through the site, then promote yourself:
 
 ```bash
-docker compose -f docker-compose.prod.yml exec db \
-  psql -U studyhelper -d studyhelper \
+dcp exec db psql -U studyhelper -d studyhelper \
   -c "update users set is_admin = true where email = 'you@example.com';"
 ```
 
@@ -116,7 +123,14 @@ API=https://study.example.com ./scripts/invite.sh "a course mate" 1 30
 
 ```bash
 git pull
-docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+dcp up -d --build
+```
+
+Then reclaim the build cache, which grows by gigabytes per rebuild and is the
+most likely thing to fill the disk:
+
+```bash
+docker builder prune -f
 ```
 
 Migrations are applied on backend start, so schema changes need nothing extra.
@@ -132,14 +146,17 @@ the whole setup.
 For a database-only dump:
 
 ```bash
-docker compose -f docker-compose.prod.yml exec -T db \
-  pg_dump -U studyhelper studyhelper | gzip > backup-$(date +%F).sql.gz
+dcp exec -T db pg_dump -U studyhelper studyhelper | gzip > backup-$(date +%F).sql.gz
 ```
 
 ## If it doesn't come up
 
-**Caddy can't get a certificate** — nearly always DNS. `docker compose -f
-docker-compose.prod.yml logs caddy` says so plainly. Confirm `dig` returns the
+**`required variable SECRET_KEY is missing a value`** — the command ran
+without `--env-file`. Use the `dcp` alias above; it applies to every compose
+subcommand, not just `up`.
+
+**Caddy can't get a certificate** — nearly always DNS. `dcp logs caddy` says
+so plainly. Confirm `dig` returns the
 right IP and that 80/443 are open.
 
 **Backend exits immediately** — the production guard refuses to start while
