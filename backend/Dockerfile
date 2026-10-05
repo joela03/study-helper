@@ -8,7 +8,14 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+
+# CPU-only torch, installed first so sentence-transformers finds the
+# requirement already satisfied. Pip's default wheel bundles the CUDA
+# runtime — nvidia/* and triton came to ~4GB of GPU libraries that a CPU
+# host never loads.
 RUN pip install --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir torch==2.14.1 \
+        --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt
 
 # Bake the embedding model into the image so no one ever waits for the
