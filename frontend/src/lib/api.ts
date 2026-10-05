@@ -312,6 +312,7 @@ export async function register(data: {
   email: string;
   display_name: string;
   password: string;
+  invite_code?: string;
 }): Promise<{ access_token: string; user: AuthUser }> {
   return fetchAPI("/api/auth/register", {
     method: "POST",

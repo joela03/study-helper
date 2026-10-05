@@ -12,6 +12,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,7 +24,12 @@ export default function LoginPage() {
       const result =
         mode === "signin"
           ? await login(email, password)
-          : await register({ email, display_name: name, password });
+          : await register({
+              email,
+              display_name: name,
+              password,
+              invite_code: inviteCode.trim() || undefined,
+            });
       signIn(result.access_token, result.user);
     } catch (err) {
       setError(err instanceof Error ? err.message : "That didn't work");
@@ -56,6 +62,22 @@ export default function LoginPage() {
 
             {mode === "signup" && (
               <label className="mt-5 block">
+                <span className="font-hand text-xs text-ink/60">
+                  Invite code
+                </span>
+                <input
+                  type="text"
+                  value={inviteCode}
+                  onChange={(e) => setInviteCode(e.target.value)}
+                  required
+                  placeholder="from whoever invited you"
+                  className="mt-1 w-full border-b border-[#8a6e1e]/30 bg-transparent pb-1.5 font-hand tracking-wide text-ink uppercase placeholder:normal-case placeholder:tracking-normal placeholder:text-ink/30 focus:border-[#8a6e1e] focus:outline-none"
+                />
+              </label>
+            )}
+
+            {mode === "signup" && (
+              <label className="mt-4 block">
                 <span className="font-hand text-xs text-ink/60">Name</span>
                 <input
                   type="text"

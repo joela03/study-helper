@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     # deployment — the default exists only so local dev runs out of the box.
     SECRET_KEY: str = "dev-only-insecure-change-me"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 14
+    # Closed sign-ups by default: an open registration endpoint on a
+    # public URL is an invitation to strangers to use your LLM quota.
+    REQUIRE_INVITE: bool = True
 
     # File uploads
     UPLOAD_DIR: str = "/app/uploads"
