@@ -65,3 +65,6 @@ Thumbs.db
 
 # Production secrets
 .env.production
+
+# A clone of this repo accidentally made inside itself
+/study-helper/
