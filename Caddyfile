@@ -1,0 +1,25 @@
+# TLS certificates are obtained and renewed automatically from Let's Encrypt,
+# which needs PUBLIC_DOMAIN to resolve to this host with 80 and 443 open.
+{$PUBLIC_DOMAIN} {
+	encode zstd gzip
+
+	# One origin for browser and API, so there's no CORS preflight in normal
+	# use. `handle` passes the path through unchanged, which is what the
+	# backend wants — it already mounts its routes under /api.
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+
+	handle /health {
+		reverse_proxy backend:8000
+	}
+
+	handle {
+		reverse_proxy frontend:3000
+	}
+
+	# Uploads are large; the default body limit would reject lecture PDFs
+	request_body {
+		max_size 100MB
+	}
+}

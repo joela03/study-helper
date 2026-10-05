@@ -62,3 +62,6 @@ uploads/
 # OS
 .DS_Store
 Thumbs.db
+
+# Production secrets
+.env.production

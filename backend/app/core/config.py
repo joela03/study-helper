@@ -2,6 +2,9 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    # "development" or "production"; production refuses insecure defaults
+    ENVIRONMENT: str = "development"
+
     # Database
     DATABASE_URL: str = "postgresql://studyhelper:studyhelper@localhost:5432/studyhelper"
 
@@ -22,8 +25,17 @@ class Settings(BaseSettings):
     LLM_MAX_OUTPUT_TOKENS: int = 900
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"  # Local sentence-transformers model
 
-    # CORS
-    CORS_ORIGINS: list[str] = ["http://localhost:3000"]
+    # Comma-separated, e.g.
+    # CORS_ORIGINS=https://study.example.com,https://www.study.example.com
+    #
+    # Kept as a plain string: pydantic-settings tries to JSON-parse any
+    # complex type straight from the environment, so a list field rejects a
+    # bare URL before any validator can run. Read cors_origins instead.
+    CORS_ORIGINS: str = "http://localhost:3000"
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
 
     # Auth. SECRET_KEY must be set from the environment in any real
     # deployment — the default exists only so local dev runs out of the box.

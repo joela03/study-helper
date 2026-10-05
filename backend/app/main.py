@@ -8,8 +8,37 @@ from app.core.config import settings
 from app.core.database import engine
 
 
+INSECURE_SECRET = "dev-only-insecure-change-me"
+
+
+def _check_production_config() -> None:
+    """
+    Refuse to start in production with settings that are only safe locally.
+
+    A default signing key means anyone can mint a token for any account, and
+    it fails silently — the app works perfectly until someone notices.
+    """
+    if settings.ENVIRONMENT != "production":
+        return
+
+    problems = []
+    if settings.SECRET_KEY == INSECURE_SECRET:
+        problems.append("SECRET_KEY is still the development default")
+    if any("localhost" in origin for origin in settings.cors_origins):
+        problems.append(f"CORS_ORIGINS still points at localhost: {settings.cors_origins}")
+    if "studyhelper:studyhelper@" in settings.DATABASE_URL:
+        problems.append("DATABASE_URL still uses the default password")
+
+    if problems:
+        raise RuntimeError(
+            "Refusing to start in production:\n  - " + "\n  - ".join(problems)
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _check_production_config()
+
     # Schema is owned by Alembic — run `alembic upgrade head` before start.
     # create_all only ever created missing tables and never altered existing
     # ones, so column changes silently didn't apply.
@@ -34,7 +63,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
