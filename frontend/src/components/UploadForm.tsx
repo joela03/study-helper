@@ -18,12 +18,8 @@ interface Props {
   onUploaded: (transcript: Transcript) => void;
 }
 
-/** Where the spoken content comes from. Slides can accompany either. */
-type Source = "paste" | "audio";
-
 export default function UploadForm({ profileId, accent, onUploaded }: Props) {
   const [title, setTitle] = useState("");
-  const [source, setSource] = useState<Source>("paste");
   const [document, setDocument] = useState<File | null>(null);
   const [text, setText] = useState("");
   const [lectureFile, setLectureFile] = useState<File | null>(null);
@@ -54,12 +50,17 @@ export default function UploadForm({ profileId, accent, onUploaded }: Props) {
       return;
     }
 
+    if (kind === "audio") {
+      clearLectureFile();
+      setError(describeLectureFile(kind));
+      return;
+    }
+
     if (kind === "text") {
       try {
         const content = await file.text();
         setText(content);
         clearLectureFile();
-        setSource("paste");
       } catch {
         setError("Couldn't read that file");
       }
@@ -68,7 +69,6 @@ export default function UploadForm({ profileId, accent, onUploaded }: Props) {
 
     setLectureFile(file);
     setLectureKind(kind);
-    setSource(kind === "audio" ? "audio" : "paste");
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -78,11 +78,10 @@ export default function UploadForm({ profileId, accent, onUploaded }: Props) {
       return;
     }
 
-    const sendingAudio = lectureKind === "audio" ? lectureFile : null;
     const sendingDoc = lectureKind === "word" ? lectureFile : null;
     const sendingText = sendingDoc ? "" : pasted;
 
-    if (!document && !sendingAudio && !sendingDoc && !sendingText) {
+    if (!document && !sendingDoc && !sendingText) {
       setError("Add slides, paste a transcript, or drop a file in");
       return;
     }
@@ -95,7 +94,6 @@ export default function UploadForm({ profileId, accent, onUploaded }: Props) {
         profileId,
         title,
         document: document || undefined,
-        audio: sendingAudio || undefined,
         transcriptFile: sendingDoc || undefined,
         transcriptText: sendingText || undefined,
       });
@@ -110,11 +108,6 @@ export default function UploadForm({ profileId, accent, onUploaded }: Props) {
       setIsUploading(false);
     }
   };
-
-  const sources: { key: Source; label: string }[] = [
-    { key: "paste", label: "paste transcript" },
-    { key: "audio", label: "upload audio" },
-  ];
 
   return (
     <form
@@ -158,76 +151,45 @@ export default function UploadForm({ profileId, accent, onUploaded }: Props) {
           />
         </label>
 
-        {/* Spoken content: already transcribed, or audio for Whisper */}
+        {/* The lecture's spoken content, already transcribed */}
         <div>
-          <div className="flex gap-1">
-            {sources.map((option) => (
-              <button
-                key={option.key}
-                type="button"
-                onClick={() => setSource(option.key)}
-                aria-pressed={source === option.key}
-                className="rounded-t-md px-3 py-1 font-hand text-xs transition-colors"
-                style={
-                  source === option.key
-                    ? { backgroundColor: accent.tab, color: accent.ink }
-                    : { color: "var(--color-graphite)" }
-                }
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
+          <p className="font-hand text-xs text-graphite">Transcript</p>
 
           <div
-            className="space-y-3 rounded-b-md rounded-tr-md border p-3"
+            className="mt-2 space-y-3 rounded-md border p-3"
             style={{ borderColor: accent.tab }}
           >
-            {source === "paste" ? (
-              <>
-                {lectureKind === "word" && lectureFile ? (
-                  <FileDrop
-                    accept={LECTURE_ACCEPT}
-                    tone={accent.tab}
-                    hint="drop a transcript in"
-                    filename={lectureFile.name}
-                    note={describeLectureFile(lectureKind)}
-                    onFile={handleFile}
-                    onClear={clearLectureFile}
-                  />
-                ) : (
-                  <>
-                    <textarea
-                      value={text}
-                      onChange={(e) => setText(e.target.value)}
-                      rows={7}
-                      placeholder="Paste the transcript from Panopto here…"
-                      className="w-full resize-y bg-transparent text-sm leading-6 text-ink placeholder:text-ink/30 focus:outline-none"
-                    />
-                    <p className="text-right text-xs text-ink/40">
-                      {pasted
-                        ? `${pasted.length.toLocaleString()} characters — no transcription needed`
-                        : "no transcription needed — this goes straight to chunking"}
-                    </p>
-                    <FileDrop
-                      accept={LECTURE_ACCEPT}
-                      tone={accent.tab}
-                      hint="or drop a .txt, .md or .docx in"
-                      onFile={handleFile}
-                    />
-                  </>
-                )}
-              </>
-            ) : (
+            {lectureKind === "word" && lectureFile ? (
               <FileDrop
                 accept={LECTURE_ACCEPT}
                 tone={accent.tab}
-                hint="drop the recording in"
-                filename={lectureFile?.name ?? null}
-                note={lectureKind ? describeLectureFile(lectureKind) : null}
+                hint="drop a transcript in"
+                filename={lectureFile.name}
+                note={describeLectureFile(lectureKind)}
                 onFile={handleFile}
                 onClear={clearLectureFile}
               />
+            ) : (
+              <>
+                <textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  rows={7}
+                  placeholder="Paste the transcript from Panopto here…"
+                  className="w-full resize-y bg-transparent text-sm leading-6 text-ink placeholder:text-ink/30 focus:outline-none"
+                />
+                <p className="text-right text-xs text-ink/40">
+                  {pasted
+                    ? `${pasted.length.toLocaleString()} characters`
+                    : "goes straight to chunking — no transcription step"}
+                </p>
+                <FileDrop
+                  accept={LECTURE_ACCEPT}
+                  tone={accent.tab}
+                  hint="or drop a .txt, .md or .docx in"
+                  onFile={handleFile}
+                />
+              </>
             )}
           </div>
         </div>

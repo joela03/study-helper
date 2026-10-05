@@ -71,6 +71,16 @@ async def create_transcript(
         transcript_file = audio
         audio = None
 
+    # Fail here rather than queueing work the worker can't do
+    if audio and not settings.ENABLE_AUDIO_TRANSCRIPTION:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Audio transcription is turned off. Paste the lecture "
+                "transcript, or upload it as .txt, .md or .docx."
+            ),
+        )
+
     if transcript_file and not is_transcript_file(transcript_file.filename):
         raise HTTPException(
             status_code=400,

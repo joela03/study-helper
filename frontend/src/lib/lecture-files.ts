@@ -12,9 +12,13 @@ const PLAIN_TEXT = ["txt", "md", "markdown"];
 const WORD = ["docx"];
 const LEGACY_WORD = ["doc"];
 
-/** For the file picker's accept attribute — audio plus transcript formats. */
-export const LECTURE_ACCEPT =
-  ".mp3,.wav,.m4a,.ogg,.flac,.txt,.md,.markdown,.docx";
+/**
+ * Transcript formats only. Audio transcription is off — lectures normally
+ * come with a transcript already, and Whisper was the single largest thing
+ * the worker loaded. Audio files are still classified so dropping one gets
+ * an explanation rather than silent rejection by the picker.
+ */
+export const LECTURE_ACCEPT = ".txt,.md,.markdown,.docx";
 
 function suffixOf(name: string): string {
   const parts = name.toLowerCase().split(".");
@@ -39,6 +43,6 @@ export function describeLectureFile(kind: LectureFileKind): string {
     case "legacy-word":
       return "legacy .doc can't be read — save it as .docx or .txt";
     case "audio":
-      return "audio — Whisper transcribes this on the worker, which takes a while";
+      return "audio transcription is off — paste the transcript, or upload it as .txt, .md or .docx";
   }
 }

@@ -26,8 +26,11 @@ groq==0.11.0
 sentence-transformers==3.1.1
 numpy==1.26.4
 
-# Audio transcription (faster-whisper is lighter and faster than openai-whisper)
-faster-whisper==1.0.3
+# Audio transcription is off by default: lectures normally come with a
+# transcript already (Panopto and the like), and the model plus ffmpeg cost
+# ~2GB of image and roughly half the worker's memory. To re-enable, install
+# faster-whisper==1.0.3, restore ffmpeg in the Dockerfile, and set
+# ENABLE_AUDIO_TRANSCRIPTION=true.
 
 # Text processing
 nltk==3.9.1

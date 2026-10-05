@@ -1,16 +1,42 @@
 """
 Audio transcription service using faster-whisper.
+
+faster-whisper is an optional dependency and is not installed by default:
+lectures usually arrive with a transcript already, and the model is the
+single largest thing the worker would otherwise load. The import is deferred
+so the rest of the pipeline runs without it.
 """
 from pathlib import Path
 
-from faster_whisper import WhisperModel
+from app.core.config import settings
+
+
+class AudioTranscriptionUnavailable(RuntimeError):
+    """Raised when audio arrives but Whisper isn't installed or enabled."""
+
+
+def _load_whisper():
+    if not settings.ENABLE_AUDIO_TRANSCRIPTION:
+        raise AudioTranscriptionUnavailable(
+            "Audio transcription is turned off. Paste the lecture transcript "
+            "instead, or set ENABLE_AUDIO_TRANSCRIPTION=true after installing "
+            "faster-whisper."
+        )
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as e:
+        raise AudioTranscriptionUnavailable(
+            "faster-whisper isn't installed. Add it to requirements.txt and "
+            "rebuild, or paste the transcript instead."
+        ) from e
+    return WhisperModel
 
 
 # Lazy load model to avoid loading on import
 _model = None
 
 
-def get_whisper_model(model_size: str = "base") -> WhisperModel:
+def get_whisper_model(model_size: str = "base"):
     """
     Get or initialize the Whisper model.
 
@@ -21,6 +47,7 @@ def get_whisper_model(model_size: str = "base") -> WhisperModel:
     """
     global _model
     if _model is None:
+        WhisperModel = _load_whisper()
         # Use CPU for compatibility; change to "cuda" if GPU available
         _model = WhisperModel(model_size, device="cpu", compute_type="int8")
     return _model

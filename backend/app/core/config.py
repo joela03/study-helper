@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # public URL is an invitation to strangers to use your LLM quota.
     REQUIRE_INVITE: bool = True
 
+    # Whisper is not installed by default — see requirements.txt
+    ENABLE_AUDIO_TRANSCRIPTION: bool = False
+
     # File uploads
     UPLOAD_DIR: str = "/app/uploads"
     MAX_UPLOAD_SIZE_MB: int = 100

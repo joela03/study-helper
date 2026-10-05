@@ -28,7 +28,10 @@ def process_transcript(self, transcript_id: int):
     from app.core.config import settings
     from app.models.transcript import Transcript, TranscriptChunk, TranscriptStatus
     from app.services.extraction import extract_document_text
-    from app.services.transcription import transcribe_audio
+    from app.services.transcription import (
+        AudioTranscriptionUnavailable,
+        transcribe_audio,
+    )
     from app.services.merging import merge_document_and_audio
     from app.services.chunking import semantic_chunk
     from app.services.embeddings import generate_embeddings_batch
@@ -74,6 +77,10 @@ def process_transcript(self, transcript_id: int):
                     audio_text = transcribe_audio(transcript.audio_path)
                     transcript.audio_text = audio_text
                     logger.info(f"Transcribed {len(audio_text)} characters from audio")
+                except AudioTranscriptionUnavailable as e:
+                    # Expected when Whisper is off; the document may still
+                    # carry enough text to process
+                    logger.info(f"Skipping audio: {e}")
                 except Exception as e:
                     logger.warning(f"Audio transcription failed: {e}")
 
