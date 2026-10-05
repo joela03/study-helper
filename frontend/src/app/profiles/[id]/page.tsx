@@ -53,6 +53,23 @@ export default function ProfileDetailPage() {
     fetchData();
   }, [fetchData]);
 
+  // Processing happens on the worker, so the page would otherwise sit on
+  // whatever status it loaded with. Poll while anything is still in flight
+  // and stop as soon as everything has settled.
+  const settling = transcripts.some(
+    (t) => t.status === "pending" || t.status === "processing"
+  );
+
+  useEffect(() => {
+    if (!settling) return;
+    const timer = setInterval(() => {
+      getTranscripts(profileId)
+        .then((res) => setTranscripts(res.transcripts))
+        .catch((error) => console.error("Failed to refresh transcripts:", error));
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [settling, profileId]);
+
   async function handleGenerateCards(transcriptId: number) {
     setGenerating(transcriptId);
     try {
@@ -187,11 +204,15 @@ export default function ProfileDetailPage() {
                         </h3>
                         <p className="mt-1 text-xs">
                           <span style={{ color: STATUS_TONE[transcript.status] }}>
-                            {transcript.status}
+                            {transcript.status === "processing"
+                              ? "processing…"
+                              : transcript.status}
                           </span>
                           <span className="text-ink/50">
-                            {" "}
-                            · {transcript.chunk_count} chunks
+                            {transcript.status === "pending" ||
+                            transcript.status === "processing"
+                              ? " · working through it"
+                              : ` · ${transcript.chunk_count} chunks`}
                           </span>
                         </p>
                       </div>
