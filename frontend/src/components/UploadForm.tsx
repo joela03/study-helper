@@ -178,11 +178,11 @@ export default function UploadForm({ profileId, accent, onUploaded }: Props) {
                   placeholder="Paste the transcript from Panopto here…"
                   className="w-full resize-y bg-transparent text-sm leading-6 text-ink placeholder:text-ink/30 focus:outline-none"
                 />
-                <p className="text-right text-xs text-ink/40">
-                  {pasted
-                    ? `${pasted.length.toLocaleString()} characters`
-                    : "goes straight to chunking — no transcription step"}
-                </p>
+                {pasted && (
+                  <p className="text-right text-xs text-ink/40">
+                    {pasted.length.toLocaleString()} characters
+                  </p>
+                )}
                 <FileDrop
                   accept={LECTURE_ACCEPT}
                   tone={accent.tab}
