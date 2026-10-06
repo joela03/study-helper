@@ -7,7 +7,14 @@
 set -euo pipefail
 
 API="${API:-http://localhost:8000}"
-EMAIL="${STUDY_HELPER_EMAIL:-joelallenc03@gmail.com}"
+
+# Prompt rather than defaulting to any particular address — this repo is
+# public, and the admin account differs between local and deployed anyway.
+EMAIL="${STUDY_HELPER_EMAIL:-}"
+if [ -z "$EMAIL" ]; then
+  printf 'Admin email: ' >&2
+  read -r EMAIL
+fi
 
 printf 'Password for %s: ' "$EMAIL" >&2
 read -rs PASSWORD
