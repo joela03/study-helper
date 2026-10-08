@@ -73,6 +73,7 @@ export interface Concept {
   mechanism: string | null;
   limitation: string | null;
   relevance: string | null;
+  worked_example: string | null;
   questions: ConceptQuestion[];
   followups: string[];
   card_count: number;

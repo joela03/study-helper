@@ -2,6 +2,7 @@
 
 import { Concept } from "@/types";
 import { Accent } from "@/lib/accents";
+import Maths from "@/components/Maths";
 
 interface Props {
   concept: Concept;
@@ -26,7 +27,7 @@ function Section({
       <span className="font-hand" style={{ color: tone }}>
         {label}:{" "}
       </span>
-      {body}
+      <Maths>{body}</Maths>
     </p>
   );
 }
@@ -78,6 +79,23 @@ export default function ConceptPanel({
         />
       </section>
 
+      {concept.worked_example && (
+        <section
+          className="rounded-tl-xl rounded-br-xl rounded-bl-sm border p-5"
+          style={{ borderColor: accent.tab }}
+        >
+          <p className="font-hand text-xs" style={{ color: accent.ink }}>
+            Worked example
+          </p>
+          <div className="mt-2 text-sm leading-7 text-ink/85">
+            <Maths>{concept.worked_example}</Maths>
+          </div>
+        </section>
+      )}
+
+      <section style={{ display: "contents" }}>
+      </section>
+
       {!explainerOnly && concept.questions.length > 0 && (
         <section className="rounded-tl-xl rounded-br-xl rounded-bl-sm border border-rule p-5">
           <p className="font-hand text-xs text-graphite">Sample questions</p>
@@ -92,10 +110,10 @@ export default function ConceptPanel({
                 className="flex items-start justify-between gap-4 py-3"
               >
                 <div className="min-w-0">
-                  <p className="text-sm leading-6 text-ink">{question.text}</p>
+                  <p className="text-sm leading-6 text-ink"><Maths>{question.text}</Maths></p>
                   {question.answer && (
                     <p className="mt-1 text-sm leading-6 text-graphite">
-                      {question.answer}
+                      <Maths>{question.answer}</Maths>
                     </p>
                   )}
                 </div>

@@ -38,6 +38,8 @@ class Concept(Base, TimestampMixin):
     limitation: Mapped[Optional[str]] = mapped_column(Text)
     # Where this sits in the module and what it connects to
     relevance: Mapped[Optional[str]] = mapped_column(Text)
+    # Only produced for calculation-heavy courses
+    worked_example: Mapped[Optional[str]] = mapped_column(Text)
 
     # [{"text": str, "type": "A" | "B"}] — A explains a concept, B is a scenario
     questions: Mapped[Optional[list]] = mapped_column(JSON, default=list)

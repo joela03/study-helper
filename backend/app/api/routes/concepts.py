@@ -46,6 +46,7 @@ class ConceptResponse(BaseModel):
     mechanism: Optional[str]
     limitation: Optional[str]
     relevance: Optional[str] = None
+    worked_example: Optional[str] = None
     questions: list[ConceptQuestion] = []
     followups: list[str] = []
     card_count: int = 0
@@ -102,6 +103,7 @@ def _to_response(concept: Concept, card_count: int = 0) -> ConceptResponse:
         mechanism=concept.mechanism,
         limitation=concept.limitation,
         relevance=concept.relevance,
+        worked_example=concept.worked_example,
         questions=[ConceptQuestion(**q) for q in (concept.questions or [])],
         followups=list(concept.followups or []),
         card_count=card_count,

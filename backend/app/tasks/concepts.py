@@ -34,6 +34,7 @@ def generate_concepts_task(
     from app.models.transcript import Transcript
     from app.services.generation import (
         CONCEPT_WINDOW_CHARS,
+        analyse_course,
         build_course_context,
         generate_concepts_progressive,
         get_available_provider,
@@ -124,6 +125,7 @@ def generate_concepts_task(
                 mechanism=data["mechanism"],
                 limitation=data["limitation"],
                 relevance=data.get("relevance"),
+                worked_example=data.get("worked_example"),
                 questions=data["questions"],
                 followups=data["followups"],
                 source_chunks=window,
@@ -158,11 +160,15 @@ def generate_concepts_task(
         materials = db.query(CourseMaterial).filter(
             CourseMaterial.profile_id == transcript.profile_id
         ).all()
-        course_context = build_course_context(
-            [(m.kind.value, m.title, m.content or "") for m in materials]
-        )
+        material_tuples = [(m.kind.value, m.title, m.content or "") for m in materials]
+        course_context = build_course_context(material_tuples)
+        course = analyse_course(material_tuples)
+
         if course_context:
-            logger.info(f"Using {len(materials)} course materials as context")
+            logger.info(
+                f"Using {len(materials)} course materials as context "
+                f"(oral_exam={course['oral_exam']}, maths_heavy={course['maths_heavy']})"
+            )
 
         try:
             provider = get_available_provider()
@@ -174,6 +180,7 @@ def generate_concepts_task(
                 skip_chunks=covered,
                 prior_titles=prior_titles,
                 course_context=course_context,
+                course=course,
             )
         except Exception as e:
             logger.exception(f"Concept generation failed for {transcript_id}")

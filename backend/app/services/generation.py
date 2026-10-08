@@ -442,28 +442,68 @@ def generate_flashcards(
     )
 
 
-CONCEPT_SYSTEM_PROMPT = """You are an expert educator condensing a university lecture into the small number of ideas a student actually needs to hold in their head.
+def build_concept_prompt(course: dict) -> str:
+    """
+    The concept prompt, shaped by how the course is actually assessed.
+
+    Examiner follow-ups only earn their place when someone will be asking
+    questions out loud; a worked example only when the subject is one you
+    calculate rather than describe.
+    """
+    sections = [
+        '- "title": 2-4 words, the label on a tab. e.g. "Perceptron & MLP", "Activation functions"',
+        '- "headline": a short line framing the idea, e.g. "From single perceptron to multi-layer perceptron"',
+        '- "definition": ONE sentence. What it is, plainly.',
+        '- "intuition": an analogy or mental picture that makes it click. Concrete, everyday where possible.',
+        '- "mechanism": how it actually works, and how it builds on the earlier concepts. Include the key formula or relationship if there is one.',
+        '- "limitation": the caveat, failure case or boundary a student should mention to show real understanding.',
+        '- "relevance": one line on where this sits in the module and what it connects to.',
+    ]
+
+    if course.get("maths_heavy"):
+        sections.append(
+            '- "worked_example": a short worked calculation with real numbers, '
+            'showing the steps in order. This course is assessed by calculation, '
+            'so a student must be able to *do* it, not just describe it. Omit '
+            'only if the concept genuinely involves no computation.'
+        )
+
+    question_line = (
+        '- "questions": exactly 2 questions. Each is {"text": ..., "type": ..., "answer": ...} '
+        'where type is "A" to explain a concept or "B" for an applied scenario, and answer '
+        'is an outline of what a good answer covers, in 1-3 sentences.'
+    )
+    if course.get("maths_heavy"):
+        question_line += ' Make at least one of the two a question that requires a calculation.'
+    sections.append(question_line)
+
+    if course.get("oral_exam"):
+        sections.append(
+            '- "followups": exactly 2 things an examiner would probe after a confident '
+            'spoken answer, phrased as the student anticipating them.'
+        )
+
+    maths_rule = (
+        "- Write mathematics as LaTeX between dollar signs: $f(x,y)$ inline, "
+        "$$F(u,v) = \\sum_x \\sum_y f(x,y)$$ for a displayed equation. Never "
+        "write equations as plain text or unicode symbols."
+    )
+
+    return f"""You are an expert educator condensing a university lecture into the small number of ideas a student actually needs to hold in their head.
 
 You are shown one section of the lecture at a time, in teaching order, along with the concepts already extracted from earlier sections.
 
 For the concept, produce:
-- "title": 2-4 words, the label on a tab. e.g. "Perceptron & MLP", "Activation functions"
-- "headline": a short line framing the idea, e.g. "From single perceptron to multi-layer perceptron"
-- "definition": ONE sentence. What it is, plainly.
-- "intuition": an analogy or mental picture that makes it click. Concrete, everyday where possible.
-- "mechanism": how it actually works, and how it builds on the earlier concepts. Include the key formula or relationship if there is one.
-- "limitation": the caveat, failure case or boundary a student should mention to show real understanding.
-- "relevance": one line on where this sits in the module and what it connects to — what it builds on, what builds on it, and how it tends to be examined if the course context says.
-- "questions": exactly 2 questions. Each is {"text": ..., "type": ..., "answer": ...} where type is "A" to explain a concept or "B" for an applied scenario ("You need to ... what would you do?"), and answer is an outline of what a good answer covers, in 1-3 sentences. Include at least one type B where the material allows.
-- "followups": exactly 2 things an examiner would probe after a confident answer, phrased as the student anticipating them. e.g. "If I say 'hidden layers add power', they might ask: why not just add more neurons to one layer instead?"
+{chr(10).join(sections)}
 
 Rules:
 - Extract exactly ONE concept: the single most important idea in this section. Do not invent material.
 - Keep every field tight: definition one sentence, intuition and mechanism two sentences at most, limitation one sentence.
-- Do not repeat a concept already extracted. Where this section extends one, say so in "mechanism".
-- Write for someone revising, not for a textbook. Short sentences.
+- If this section is ADMINISTRATIVE rather than teaching material — a title slide, module code, lecturer name, contents page, learning outcomes, reading list, acknowledgements, or a section divider — return an empty array []. Do not invent a concept to fill the gap.
+- Do not repeat a concept already extracted. If this section only re-covers ground an earlier concept holds, return [] rather than restating it in different words.
+{maths_rule}
 
-Output format: a JSON array containing ONE concept object with exactly those keys. Only output valid JSON, no additional text."""
+Output format: a JSON array containing ONE concept object with exactly those keys, or [] if this section teaches nothing new. Only output valid JSON, no additional text."""
 
 
 def _parse_json_array(response_text: str) -> list:
@@ -507,6 +547,61 @@ def _parse_json_array(response_text: str) -> list:
 # Course context rides along in every concept prompt, so it has to stay small
 # next to the ~4k of lecture content and the free tier's output allowance.
 COURSE_CONTEXT_CHARS = 1_800
+
+# Two concepts whose title and definition embed this close together are the
+# same idea in different words. Exact-title matching never caught pairs like
+# "Spatial Domain Filtering" and "Spatial Domain Convolution".
+#
+# Measured on that real pair: duplicate 0.81, related-but-distinct
+# ("Convolution Theorem") 0.51, unrelated 0.30-0.35. 0.70 sits in the gap.
+CONCEPT_DUPLICATE_SIMILARITY = 0.70
+
+_ORAL_EXAM_HINTS = (
+    "oral exam", "oral examination", "viva", "presentation", "interview",
+)
+
+# Signals that a course is worked-calculation heavy rather than discursive.
+# Calibrated against a real paper (EEE3032 Computer Vision, which asks you to
+# convolve matrices by hand) versus discursive course text.
+_MATHS_HINTS = (
+    # things a question asks you to *do*
+    "calculate", "compute", "derive", "prove", "evaluate", "estimate",
+    "convolve", "solve", "determine the", "show that",
+    # things the maths is made of
+    "matrix", "matrices", "vector", "equation", "theorem", "formula",
+    "probability", "derivative", "integral", "coefficient", "convolution",
+    "gradient", "transform", "distance measure", "distribution",
+    # notation
+    "\\sum", "\\frac", "\\int", "sum_", "log", "sigma",
+)
+
+# Hits per 1,000 characters. The reference paper scores ~2.5 and a
+# discursive syllabus well under 1, so this sits between them rather than
+# at either extreme.
+_MATHS_THRESHOLD = 1.2
+
+def analyse_course(materials: list[tuple[str, str, str]]) -> dict:
+    """
+    Work out how this course is actually assessed, from what's been uploaded.
+
+    Cheap keyword counting rather than another LLM call: it runs on every
+    generation, and getting it wrong only changes emphasis, not correctness.
+    """
+    text = " ".join((content or "") for _, _, content in materials).lower()
+
+    if not text.strip():
+        # Nothing uploaded — don't assert anything about the course
+        return {"known": False, "oral_exam": False, "maths_heavy": False}
+
+    maths_hits = sum(text.count(h) for h in _MATHS_HINTS)
+
+    return {
+        "known": True,
+        "oral_exam": any(h in text for h in _ORAL_EXAM_HINTS),
+        # Scaled to length so a long syllabus doesn't look mathematical
+        # purely by being long
+        "maths_heavy": maths_hits / max(len(text) / 1000, 1) >= _MATHS_THRESHOLD,
+    }
 
 
 def build_course_context(materials: list[tuple[str, str, str]]) -> str:
@@ -552,8 +647,10 @@ def _concepts_from_provider(
     provider: str,
     prior_titles: list[str],
     course_context: str = "",
+    system_prompt: str | None = None,
 ) -> list[dict]:
     """One call: a section of lecture in, structured concepts out."""
+    system_prompt = system_prompt or build_concept_prompt({})
     prompt_parts = []
     if course_context:
         prompt_parts.append(course_context)
@@ -574,7 +671,7 @@ def _concepts_from_provider(
             model="qwen/qwen3.8-27b",
             max_tokens=settings.LLM_MAX_OUTPUT_TOKENS,
             messages=[
-                {"role": "system", "content": CONCEPT_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.6,
@@ -586,7 +683,7 @@ def _concepts_from_provider(
         response = get_anthropic_client().messages.create(
             model="claude-3-haiku-20240307",
             max_tokens=settings.LLM_MAX_OUTPUT_TOKENS,
-            system=CONCEPT_SYSTEM_PROMPT,
+            system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
         )
         raw = response.content[0].text
@@ -597,7 +694,7 @@ def _concepts_from_provider(
             model="gpt-4o-mini",
             max_tokens=settings.LLM_MAX_OUTPUT_TOKENS,
             messages=[
-                {"role": "system", "content": CONCEPT_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
         )
@@ -647,6 +744,7 @@ def _clean_concept(raw: dict) -> dict | None:
         "intuition": field("intuition"),
         "mechanism": field("mechanism"),
         "limitation": field("limitation"),
+        "worked_example": field("worked_example"),
         "questions": questions,
         "followups": followups,
     }
@@ -674,6 +772,47 @@ def window_chunk_indices(
     return windows
 
 
+def _is_duplicate_concept(
+    candidate: dict,
+    existing: list[str],
+    threshold: float = CONCEPT_DUPLICATE_SIMILARITY,
+) -> bool:
+    """
+    True if this concept is one we already have, worded differently.
+
+    Compares title plus definition, because titles alone are too short to
+    separate "2D Fourier Transform" from "DFT & Frequency Domain".
+    """
+    if not existing:
+        return False
+
+    from app.services.embeddings import get_embedding_model
+    import numpy as np
+
+    def describe(title: str, definition: str | None) -> str:
+        return f"{title}. {definition or ''}".strip()
+
+    text = describe(candidate["title"], candidate.get("definition"))
+
+    try:
+        model = get_embedding_model()
+        vectors = model.encode([text] + existing, convert_to_numpy=True)
+    except Exception:
+        # Never block generation on the dedup check
+        logger.exception("Duplicate check failed, keeping the concept")
+        return False
+
+    new, others = vectors[0], vectors[1:]
+    new_norm = np.linalg.norm(new)
+
+    for other in others:
+        denominator = new_norm * np.linalg.norm(other)
+        if denominator and float(np.dot(new, other) / denominator) >= threshold:
+            return True
+
+    return False
+
+
 def generate_concepts_progressive(
     chunks: list[str],
     provider: str = "groq",
@@ -684,6 +823,7 @@ def generate_concepts_progressive(
     skip_chunks: set[int] | None = None,
     prior_titles: list[str] | None = None,
     course_context: str = "",
+    course: dict | None = None,
 ) -> list[dict]:
     """
     Walk the lecture in order, condensing each window into concepts.
@@ -701,8 +841,12 @@ def generate_concepts_progressive(
     covered = skip_chunks or set()
     pending = [w for w in index_windows if any(i not in covered for i in w)]
 
+    system_prompt = build_concept_prompt(course or {})
+
     concepts: list[dict] = []
     seen: set[str] = {t.strip().lower() for t in (prior_titles or [])}
+    # Title + definition of everything already held, for the similarity check
+    described: list[str] = list(prior_titles or [])
 
     for position, window in enumerate(pending, 1):
         if len(concepts) >= max_concepts:
@@ -719,6 +863,7 @@ def generate_concepts_progressive(
                 provider=provider,
                 prior_titles=recent,
                 course_context=course_context,
+                system_prompt=system_prompt,
             )
         except json.JSONDecodeError:
             logger.error(f"Concept pass {position}/{len(pending)} returned invalid JSON")
@@ -735,7 +880,15 @@ def generate_concepts_progressive(
             key = cleaned["title"].strip().lower()
             if key in seen:
                 continue
+
+            # The model is told not to repeat itself, but it does anyway when
+            # the transcript re-covers a topic the slides already taught
+            if _is_duplicate_concept(cleaned, described):
+                logger.info(f"Skipping near-duplicate concept: {cleaned['title']}")
+                continue
+
             seen.add(key)
+            described.append(f"{cleaned['title']}. {cleaned.get('definition') or ''}".strip())
             concepts.append(cleaned)
             # Handed over straight away so it can be saved and studied while
             # the rest of the lecture is still being worked through

@@ -1,4 +1,6 @@
 @import "tailwindcss";
+/* KaTeX, for the LaTeX the model writes into concept explanations */
+@import "katex/dist/katex.min.css";
 
 @theme {
   /* Core palette — see design plan */

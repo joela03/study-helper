@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Card } from "@/types";
 import { reviewCard, ReviewResponse } from "@/lib/api";
 import { accentFor, rotationFor, liftOffsetFor } from "@/lib/accents";
+import Maths from "@/components/Maths";
 
 interface Props {
   card: Card;
@@ -73,7 +74,7 @@ export default function FlashcardReview({
               <CardHeader accent={accent.tab} position={position} />
 
               <div className="card-ruled mt-5 flex-1 overflow-y-auto">
-                <p className="text-xl leading-8 text-ink">{card.question}</p>
+                <p className="text-xl leading-8 text-ink"><Maths>{card.question}</Maths></p>
               </div>
 
               <button
@@ -89,7 +90,7 @@ export default function FlashcardReview({
               <CardHeader accent={accent.tab} position={position} back />
 
               <div className="card-ruled mt-5 flex-1 overflow-y-auto">
-                <p className="text-lg leading-8 text-ink/90">{card.answer}</p>
+                <p className="text-lg leading-8 text-ink/90"><Maths>{card.answer}</Maths></p>
               </div>
 
               <button
