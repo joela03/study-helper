@@ -499,8 +499,8 @@ For the concept, produce:
 Rules:
 - Extract exactly ONE concept: the single most important idea in this section. Do not invent material.
 - Keep every field tight: definition one sentence, intuition and mechanism two sentences at most, limitation one sentence.
-- If this section is ADMINISTRATIVE rather than teaching material — a title slide, module code, lecturer name, contents page, learning outcomes, reading list, acknowledgements, or a section divider — return an empty array []. Do not invent a concept to fill the gap.
-- Do not repeat a concept already extracted. If this section only re-covers ground an earlier concept holds, return [] rather than restating it in different words.
+- Return an empty array [] ONLY if this section is administrative rather than teaching material — a title slide, module code, lecturer name, contents page, learning outcomes, reading list, acknowledgements, or a section divider. Do not invent a concept to fill such a gap.
+- Otherwise ALWAYS return a concept, even if it feels close to an earlier one. Near-duplicates are filtered automatically afterwards, so suppressing one here only loses material. If this section develops an earlier idea, name that idea and extract what is NEW here.
 {maths_rule}
 
 Output format: a JSON array containing ONE concept object with exactly those keys, or [] if this section teaches nothing new. Only output valid JSON, no additional text."""
