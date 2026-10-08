@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push makes an in-flight run irrelevant
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        # CPU-only torch first, exactly as the Dockerfile does: the default
+        # wheel drags in ~4GB of CUDA runtime that a CI runner never uses.
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: Check everything imports
+        working-directory: backend
+        # Catches the class of break that only shows up at container start,
+        # such as a module importing a dependency that was removed
+        run: python -c "import app.main"
+
+      - name: Tests
+        working-directory: backend
+        run: python -m pytest app/tests -q
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Lint
+        working-directory: frontend
+        run: npx eslint src
+
+      - name: Build
+        working-directory: frontend
+        # The real value is inlined at deploy time; this only proves it builds
+        env:
+          NEXT_PUBLIC_API_URL: https://example.com
+        run: npm run build
+
+  migrations:
+    name: Migrations apply cleanly
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: studyhelper
+          POSTGRES_PASSWORD: studyhelper
+          POSTGRES_DB: studyhelper_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: Enable pgvector
+        run: |
+          PGPASSWORD=studyhelper psql -h localhost -U studyhelper -d studyhelper_ci \
+            -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+      - name: Upgrade from empty, then downgrade
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://studyhelper:studyhelper@localhost:5432/studyhelper_ci
+        # Proves migrations build the schema from nothing and that each one
+        # is reversible — the failure mode is only ever found at deploy time
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head

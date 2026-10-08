@@ -1,0 +1,73 @@
+name: Deploy
+
+# Only after CI passes on main. Never on a pull request — a fork's PR must
+# not be able to reach the server.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to server
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Open an SSH session
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Pin the host key so this can't be redirected to another machine
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Pull and rebuild
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_USER }}
+          APP_DIR: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes "$SSH_USER@$SSH_HOST" bash -euo pipefail <<EOF
+            cd "$APP_DIR"
+            git fetch origin main
+            git reset --hard origin/main
+
+            docker compose -f docker-compose.prod.yml --env-file .env.production \
+              up -d --build
+
+            # Each rebuild adds gigabytes; this is what fills a 40GB disk
+            docker builder prune -f
+          EOF
+
+      - name: Wait for health
+        env:
+          PUBLIC_ORIGIN: ${{ secrets.PUBLIC_ORIGIN }}
+        # Migrations run before the API serves, so a slow start is normal.
+        # Failing here means the deploy landed broken and needs looking at.
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$PUBLIC_ORIGIN/health" || true)
+            if [ "$code" = "200" ]; then
+              echo "healthy after $((i * 10))s"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "still not healthy after 5 minutes"
+          exit 1
+
+      - name: Remove the key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
