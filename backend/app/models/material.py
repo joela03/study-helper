@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING, Optional
 import enum
 
-from sqlalchemy import ForeignKey, String, Text, Enum
+from sqlalchemy import Boolean, ForeignKey, String, Text, Enum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -15,6 +15,7 @@ class MaterialKind(str, enum.Enum):
     PAST_PAPER = "past_paper"
     PROBLEM_SHEET = "problem_sheet"
     NOTES = "notes"  # Anything typed in directly
+    EXAM_INFO = "exam_info"  # Assessment details found in a lecture
     OTHER = "other"
 
 
@@ -41,6 +42,9 @@ class CourseMaterial(Base, TimestampMixin):
 
     # Extracted on upload, or typed directly. Editable either way.
     content: Mapped[Optional[str]] = mapped_column(Text)
+
+    # Lets a material stop shaping generation without being deleted
+    include_in_context: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     profile: Mapped["SubjectProfile"] = relationship("SubjectProfile")
 

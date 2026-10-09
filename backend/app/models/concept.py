@@ -40,6 +40,11 @@ class Concept(Base, TimestampMixin):
     relevance: Mapped[Optional[str]] = mapped_column(Text)
     # Only produced for calculation-heavy courses
     worked_example: Mapped[Optional[str]] = mapped_column(Text)
+    # Where students lose marks on this specific topic
+    marks_lost: Mapped[Optional[str]] = mapped_column(Text)
+    # Assessment details found in the lecture itself, promoted back into the
+    # subject's course materials so the prompt can be rewritten with them
+    exam_note: Mapped[Optional[str]] = mapped_column(Text)
 
     # [{"text": str, "type": "A" | "B"}] — A explains a concept, B is a scenario
     questions: Mapped[Optional[list]] = mapped_column(JSON, default=list)

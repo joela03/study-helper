@@ -6,6 +6,7 @@ add waiting on top, so this runs on the worker rather than holding an HTTP
 request open. Progress is reported per pass so the UI can show where it is.
 """
 import logging
+from datetime import datetime, timezone
 
 from app.tasks import celery_app
 
@@ -30,12 +31,14 @@ def generate_concepts_task(
     from app.core.config import settings
     from app.models.card import Card, CardType
     from app.models.concept import Concept
-    from app.models.material import CourseMaterial
+    from app.models.material import CourseMaterial, MaterialKind
+    from app.models.profile import SubjectProfile
     from app.models.transcript import Transcript
     from app.services.generation import (
         CONCEPT_WINDOW_CHARS,
-        analyse_course,
+        _hash_materials,
         build_course_context,
+        generate_concept_prompt,
         generate_concepts_progressive,
         get_available_provider,
         window_chunk_indices,
@@ -96,7 +99,7 @@ def generate_concepts_task(
             },
         )
 
-        counters = {"concepts": 0, "cards": 0, "index": next_index}
+        counters = {"concepts": 0, "cards": 0, "index": next_index, "exam_notes": 0}
 
         def report(current: int, total: int, so_far: int) -> None:
             self.update_state(
@@ -126,6 +129,8 @@ def generate_concepts_task(
                 limitation=data["limitation"],
                 relevance=data.get("relevance"),
                 worked_example=data.get("worked_example"),
+                marks_lost=data.get("marks_lost"),
+                exam_note=data.get("exam_note"),
                 questions=data["questions"],
                 followups=data["followups"],
                 source_chunks=window,
@@ -152,6 +157,22 @@ def generate_concepts_task(
                     ))
                     counters["cards"] += 1
 
+            # A slide describing the assessment is worth more as course
+            # context than as a concept: promote it so the next prompt
+            # regeneration knows about it.
+            note = (data.get("exam_note") or "").strip()
+            if note:
+                db.add(CourseMaterial(
+                    profile_id=transcript.profile_id,
+                    kind=MaterialKind.EXAM_INFO,
+                    title=f"Assessment details from {transcript.title}"[:255],
+                    content=note,
+                ))
+                # Not regenerated mid-run: the remaining windows would then
+                # be given different instructions from the earlier ones
+                profile.prompt_materials_hash = None
+                counters["exam_notes"] += 1
+
             db.commit()
             counters["concepts"] += 1
             counters["index"] += 1
@@ -160,15 +181,45 @@ def generate_concepts_task(
         materials = db.query(CourseMaterial).filter(
             CourseMaterial.profile_id == transcript.profile_id
         ).all()
-        material_tuples = [(m.kind.value, m.title, m.content or "") for m in materials]
+        material_tuples = [
+            (m.kind.value, m.title, m.content or "")
+            for m in materials
+            if m.include_in_context
+        ]
         course_context = build_course_context(material_tuples)
-        course = analyse_course(material_tuples)
 
-        if course_context:
-            logger.info(
-                f"Using {len(materials)} course materials as context "
-                f"(oral_exam={course['oral_exam']}, maths_heavy={course['maths_heavy']})"
-            )
+        profile = db.query(SubjectProfile).filter(
+            SubjectProfile.id == transcript.profile_id
+        ).first()
+
+        # One prompt per subject, written from its own materials. Generated
+        # on first use and reused across every window, so all 25 passes of a
+        # lecture are given identical instructions.
+        current_hash = _hash_materials(material_tuples)
+        concept_prompt = profile.concept_prompt
+
+        needs_prompt = not concept_prompt or (
+            not profile.prompt_is_custom
+            and profile.prompt_materials_hash != current_hash
+        )
+
+        if needs_prompt and material_tuples:
+            logger.info("Writing a subject prompt from its course materials")
+            written = generate_concept_prompt(material_tuples)
+            if written:
+                profile.concept_prompt = written
+                profile.prompt_materials_hash = current_hash
+                profile.prompt_updated_at = datetime.now(timezone.utc)
+                profile.prompt_is_custom = False
+                db.commit()
+                concept_prompt = written
+            else:
+                logger.warning("Falling back to the built-in prompt")
+
+        logger.info(
+            f"{len(material_tuples)} materials in context; "
+            f"prompt={'subject' if concept_prompt else 'built-in'}"
+        )
 
         try:
             provider = get_available_provider()
@@ -180,7 +231,7 @@ def generate_concepts_task(
                 skip_chunks=covered,
                 prior_titles=prior_titles,
                 course_context=course_context,
-                course=course,
+                concept_prompt=concept_prompt,
             )
         except Exception as e:
             logger.exception(f"Concept generation failed for {transcript_id}")
@@ -198,6 +249,7 @@ def generate_concepts_task(
         logger.info(
             f"Transcript {transcript_id}: +{counters['concepts']} concepts, "
             f"+{counters['cards']} cards, "
+            f"{counters['exam_notes']} exam notes captured, "
             f"{len(covered)}/{len(ordered)} chunks covered"
         )
 
@@ -205,6 +257,7 @@ def generate_concepts_task(
             "transcript_id": transcript_id,
             "concepts_created": counters["concepts"],
             "cards_created": counters["cards"],
+            "exam_notes_found": counters["exam_notes"],
             "passes": total_passes,
             "covered_chunks": len(covered),
             "total_chunks": len(ordered),

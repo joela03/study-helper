@@ -442,68 +442,164 @@ def generate_flashcards(
     )
 
 
-def build_concept_prompt(course: dict) -> str:
-    """
-    The concept prompt, shaped by how the course is actually assessed.
+# Keys the parser depends on. A generated prompt that omits any of these
+# would break every pass for that subject, so it's rejected rather than
+# stored.
+REQUIRED_CONCEPT_KEYS = (
+    "title", "headline", "definition", "intuition",
+    "mechanism", "limitation", "questions",
+)
 
-    Examiner follow-ups only earn their place when someone will be asking
-    questions out loud; a worked example only when the subject is one you
-    calculate rather than describe.
-    """
-    sections = [
-        '- "title": 2-4 words, the label on a tab. e.g. "Perceptron & MLP", "Activation functions"',
-        '- "headline": a short line framing the idea, e.g. "From single perceptron to multi-layer perceptron"',
-        '- "definition": ONE sentence. What it is, plainly.',
-        '- "intuition": an analogy or mental picture that makes it click. Concrete, everyday where possible.',
-        '- "mechanism": how it actually works, and how it builds on the earlier concepts. Include the key formula or relationship if there is one.',
-        '- "limitation": the caveat, failure case or boundary a student should mention to show real understanding.',
-        '- "relevance": one line on where this sits in the module and what it connects to.',
-    ]
+# Shares the request with ~4k of lecture text and the prior titles, so a
+# verbose prompt eats the budget that should go to the material itself.
+MAX_GENERATED_PROMPT_CHARS = 3_000
 
-    if course.get("maths_heavy"):
-        sections.append(
-            '- "worked_example": a short worked calculation with real numbers, '
-            'showing the steps in order. This course is assessed by calculation, '
-            'so a student must be able to *do* it, not just describe it. Omit '
-            'only if the concept genuinely involves no computation.'
-        )
+PROMPT_WRITER_SYSTEM = """You write extraction prompts for a study tool.
 
-    question_line = (
-        '- "questions": exactly 2 questions. Each is {"text": ..., "type": ..., "answer": ...} '
-        'where type is "A" to explain a concept or "B" for an applied scenario, and answer '
-        'is an outline of what a good answer covers, in 1-3 sentences.'
+The tool reads one section of a lecture at a time and must return ONE concept as JSON. Your job is to write the instruction it follows, tailored to the specific module described below, so that a maths module and a discursive module get genuinely different instructions.
+
+You will be shown that module's course materials: its outline, past papers, problem sheets. Read them for how the module is actually assessed — written or oral, open or closed book, mark ranges, whether questions demand calculation or argument, the notation and vocabulary it uses — and write a prompt that produces concepts a student could revise from for THAT exam.
+
+Your output is the prompt itself. No preamble, no explanation, no code fences.
+
+The prompt you write MUST:
+- instruct the model to return a JSON array containing exactly one object, or [] for administrative sections (title slides, module codes, contents pages, reading lists)
+- require these keys exactly: title, headline, definition, intuition, mechanism, limitation, questions
+- define "questions" as a list of objects with keys text, type and answer, where type is "A" for an explain-a-concept question and "B" for an applied scenario
+- require mathematics to be written as LaTeX between dollar signs, never as plain text or unicode
+- require a "marks_lost" key: where students lose marks on this specific topic in this module's exams
+- require an "exam_note" key, used only when the section itself describes the assessment, otherwise omitted
+
+The prompt you write SHOULD, where the materials justify it:
+- require "worked_example" when the module is assessed by calculation, specifying the kind of calculation its papers actually ask for
+- require "followups" ONLY if the module has an oral exam, viva or presentation; omit this key entirely for a written exam
+- mirror the module's own terminology and notation
+- state the exam format explicitly so questions match it
+
+The prompt you write MUST ALSO bound the length of every field, because the
+whole JSON object has to come back in one response of at most 700 tokens. A
+prompt that asks for more than that gets truncated mid-object and the whole
+pass is lost. State limits explicitly, roughly:
+- definition: one sentence
+- intuition, mechanism: two sentences each
+- limitation, marks_lost, relevance: one sentence each
+- worked_example: at most 5 short lines, small numbers, no large matrices
+  written out in full
+- each question answer: two sentences
+
+End the prompt with an instruction to output only valid JSON and nothing else.
+
+Keep the prompt under 2500 characters. Be specific to this module, not generic."""
+
+
+def _hash_materials(materials: list[tuple[str, str, str]]) -> str:
+    """Fingerprint, so a prompt can tell when its source material moved on."""
+    import hashlib
+
+    joined = "\u0000".join(
+        f"{kind}|{title}|{content or ''}" for kind, title, content in sorted(materials)
     )
-    if course.get("maths_heavy"):
-        question_line += ' Make at least one of the two a question that requires a calculation.'
-    sections.append(question_line)
+    return hashlib.sha256(joined.encode()).hexdigest()
 
-    if course.get("oral_exam"):
-        sections.append(
-            '- "followups": exactly 2 things an examiner would probe after a confident '
-            'spoken answer, phrased as the student anticipating them.'
-        )
 
-    maths_rule = (
-        "- Write mathematics as LaTeX between dollar signs: $f(x,y)$ inline, "
-        "$$F(u,v) = \\sum_x \\sum_y f(x,y)$$ for a displayed equation. Never "
-        "write equations as plain text or unicode symbols."
+def generate_concept_prompt(
+    materials: list[tuple[str, str, str]],
+    provider: str = "groq",
+) -> str | None:
+    """
+    Write this subject's extraction prompt from its course materials.
+
+    Returns None when there's nothing to go on, or when the result omits a
+    key the parser needs — the caller then falls back to the built-in
+    prompt rather than running a whole subject through a broken one.
+    """
+    usable = [m for m in materials if (m[2] or "").strip()]
+    if not usable:
+        return None
+
+    context = build_course_context(usable)
+    if not context:
+        return None
+
+    user = (
+        f"{context}\n"
+        "Write the extraction prompt for this module now. Output only the "
+        "prompt."
     )
 
-    return f"""You are an expert educator condensing a university lecture into the small number of ideas a student actually needs to hold in their head.
+    try:
+        if provider == "groq":
+            response = _call_with_retry(lambda: get_groq_client().chat.completions.create(
+                model="qwen/qwen3.8-27b",
+                max_tokens=settings.LLM_MAX_OUTPUT_TOKENS,
+                messages=[
+                    {"role": "system", "content": PROMPT_WRITER_SYSTEM},
+                    {"role": "user", "content": user},
+                ],
+                temperature=0.4,
+            ))
+            text = response.choices[0].message.content
+        elif provider == "anthropic":
+            response = get_anthropic_client().messages.create(
+                model="claude-3-haiku-20240307",
+                max_tokens=settings.LLM_MAX_OUTPUT_TOKENS,
+                system=PROMPT_WRITER_SYSTEM,
+                messages=[{"role": "user", "content": user}],
+            )
+            text = response.content[0].text
+        else:
+            response = get_openai_client().chat.completions.create(
+                model="gpt-4o-mini",
+                max_tokens=settings.LLM_MAX_OUTPUT_TOKENS,
+                messages=[
+                    {"role": "system", "content": PROMPT_WRITER_SYSTEM},
+                    {"role": "user", "content": user},
+                ],
+            )
+            text = response.choices[0].message.content
+    except Exception:
+        logger.exception("Couldn't write a subject prompt; using the built-in one")
+        return None
+
+    prompt = (text or "").strip()
+    if prompt.startswith("```"):
+        prompt = "\n".join(prompt.split("\n")[1:-1]).strip()
+
+    missing = [k for k in REQUIRED_CONCEPT_KEYS if k not in prompt]
+    if missing:
+        # Storing this would break every pass for the subject
+        logger.warning(f"Generated prompt omits required keys {missing}; discarding")
+        return None
+
+    return prompt[:MAX_GENERATED_PROMPT_CHARS]
+
+
+DEFAULT_CONCEPT_PROMPT = """You are an expert educator condensing a university lecture into the ideas a student needs to hold in their head.
 
 You are shown one section of the lecture at a time, in teaching order, along with the concepts already extracted from earlier sections.
 
-For the concept, produce:
-{chr(10).join(sections)}
+Return a JSON array containing exactly ONE object, or [] if the section is administrative (title slide, module code, contents page, learning outcomes, reading list, acknowledgements, section divider).
+
+The object must have these keys:
+- "title": 2-4 words, the label on a tab
+- "headline": a short line framing the idea
+- "definition": ONE sentence. What it is, plainly.
+- "intuition": an analogy or mental picture that makes it click
+- "mechanism": how it actually works, and how it builds on earlier concepts
+- "limitation": the caveat or failure case a student should mention
+- "relevance": one line on where this sits in the module
+- "marks_lost": where students lose marks on this topic in written answers
+- "questions": exactly 2 objects with keys "text", "type" and "answer", where type is "A" to explain a concept or "B" for an applied scenario
+- "worked_example": a short worked calculation with real numbers, if the topic involves computation
+- "exam_note": ONLY if this section describes the assessment itself; otherwise omit
 
 Rules:
-- Extract exactly ONE concept: the single most important idea in this section. Do not invent material.
-- Keep every field tight: definition one sentence, intuition and mechanism two sentences at most, limitation one sentence.
-- Return an empty array [] ONLY if this section is administrative rather than teaching material — a title slide, module code, lecturer name, contents page, learning outcomes, reading list, acknowledgements, or a section divider. Do not invent a concept to fill such a gap.
-- Otherwise ALWAYS return a concept, even if it feels close to an earlier one. Near-duplicates are filtered automatically afterwards, so suppressing one here only loses material. If this section develops an earlier idea, name that idea and extract what is NEW here.
-{maths_rule}
+- Extract the single most important idea in this section. Do not invent material.
+- Keep every field tight: definition one sentence, intuition and mechanism two at most.
+- Always return a concept unless the section is administrative. Near-duplicates are filtered automatically afterwards, so holding one back only loses material.
+- Write mathematics as LaTeX between dollar signs: $f(x,y)$ inline, $$F(u,v)$$ displayed. Never plain text or unicode symbols.
 
-Output format: a JSON array containing ONE concept object with exactly those keys, or [] if this section teaches nothing new. Only output valid JSON, no additional text."""
+Only output valid JSON, no additional text."""
 
 
 def _parse_json_array(response_text: str) -> list:
@@ -556,54 +652,6 @@ COURSE_CONTEXT_CHARS = 1_800
 # ("Convolution Theorem") 0.51, unrelated 0.30-0.35. 0.70 sits in the gap.
 CONCEPT_DUPLICATE_SIMILARITY = 0.70
 
-_ORAL_EXAM_HINTS = (
-    "oral exam", "oral examination", "viva", "presentation", "interview",
-)
-
-# Signals that a course is worked-calculation heavy rather than discursive.
-# Calibrated against a real paper (EEE3032 Computer Vision, which asks you to
-# convolve matrices by hand) versus discursive course text.
-_MATHS_HINTS = (
-    # things a question asks you to *do*
-    "calculate", "compute", "derive", "prove", "evaluate", "estimate",
-    "convolve", "solve", "determine the", "show that",
-    # things the maths is made of
-    "matrix", "matrices", "vector", "equation", "theorem", "formula",
-    "probability", "derivative", "integral", "coefficient", "convolution",
-    "gradient", "transform", "distance measure", "distribution",
-    # notation
-    "\\sum", "\\frac", "\\int", "sum_", "log", "sigma",
-)
-
-# Hits per 1,000 characters. The reference paper scores ~2.5 and a
-# discursive syllabus well under 1, so this sits between them rather than
-# at either extreme.
-_MATHS_THRESHOLD = 1.2
-
-def analyse_course(materials: list[tuple[str, str, str]]) -> dict:
-    """
-    Work out how this course is actually assessed, from what's been uploaded.
-
-    Cheap keyword counting rather than another LLM call: it runs on every
-    generation, and getting it wrong only changes emphasis, not correctness.
-    """
-    text = " ".join((content or "") for _, _, content in materials).lower()
-
-    if not text.strip():
-        # Nothing uploaded — don't assert anything about the course
-        return {"known": False, "oral_exam": False, "maths_heavy": False}
-
-    maths_hits = sum(text.count(h) for h in _MATHS_HINTS)
-
-    return {
-        "known": True,
-        "oral_exam": any(h in text for h in _ORAL_EXAM_HINTS),
-        # Scaled to length so a long syllabus doesn't look mathematical
-        # purely by being long
-        "maths_heavy": maths_hits / max(len(text) / 1000, 1) >= _MATHS_THRESHOLD,
-    }
-
-
 def build_course_context(materials: list[tuple[str, str, str]]) -> str:
     """
     Condense a subject's materials into a short standing brief.
@@ -650,7 +698,7 @@ def _concepts_from_provider(
     system_prompt: str | None = None,
 ) -> list[dict]:
     """One call: a section of lecture in, structured concepts out."""
-    system_prompt = system_prompt or build_concept_prompt({})
+    system_prompt = system_prompt or DEFAULT_CONCEPT_PROMPT
     prompt_parts = []
     if course_context:
         prompt_parts.append(course_context)
@@ -745,6 +793,8 @@ def _clean_concept(raw: dict) -> dict | None:
         "mechanism": field("mechanism"),
         "limitation": field("limitation"),
         "worked_example": field("worked_example"),
+        "marks_lost": field("marks_lost"),
+        "exam_note": field("exam_note"),
         "questions": questions,
         "followups": followups,
     }
@@ -823,7 +873,7 @@ def generate_concepts_progressive(
     skip_chunks: set[int] | None = None,
     prior_titles: list[str] | None = None,
     course_context: str = "",
-    course: dict | None = None,
+    concept_prompt: str | None = None,
 ) -> list[dict]:
     """
     Walk the lecture in order, condensing each window into concepts.
@@ -841,7 +891,7 @@ def generate_concepts_progressive(
     covered = skip_chunks or set()
     pending = [w for w in index_windows if any(i not in covered for i in w)]
 
-    system_prompt = build_concept_prompt(course or {})
+    system_prompt = concept_prompt or DEFAULT_CONCEPT_PROMPT
 
     concepts: list[dict] = []
     seen: set[str] = {t.strip().lower() for t in (prior_titles or [])}

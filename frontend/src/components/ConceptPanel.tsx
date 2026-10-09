@@ -96,6 +96,20 @@ export default function ConceptPanel({
       <section style={{ display: "contents" }}>
       </section>
 
+      {concept.marks_lost && (
+        <section
+          className="rounded-tl-xl rounded-br-xl rounded-bl-sm border p-5"
+          style={{ borderColor: "#eba9ad" }}
+        >
+          <p className="font-hand text-xs" style={{ color: "#9e4f54" }}>
+            Where marks get lost
+          </p>
+          <p className="mt-2 text-sm leading-6 text-ink/85">
+            <Maths>{concept.marks_lost}</Maths>
+          </p>
+        </section>
+      )}
+
       {!explainerOnly && concept.questions.length > 0 && (
         <section className="rounded-tl-xl rounded-br-xl rounded-bl-sm border border-rule p-5">
           <p className="font-hand text-xs text-graphite">Sample questions</p>

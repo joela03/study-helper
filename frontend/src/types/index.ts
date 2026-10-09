@@ -74,6 +74,7 @@ export interface Concept {
   limitation: string | null;
   relevance: string | null;
   worked_example: string | null;
+  marks_lost: string | null;
   questions: ConceptQuestion[];
   followups: string[];
   card_count: number;
