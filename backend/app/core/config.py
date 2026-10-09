@@ -11,6 +11,12 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
+    # Which provider to use: "groq", "anthropic", "openai", or "" to pick
+    # whichever key is set. Explicit, because adding a second key should
+    # never silently change which model writes your study material.
+    LLM_PROVIDER: str = ""
+    ANTHROPIC_MODEL: str = "claude-sonnet-5"
+
     # LLM APIs
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""

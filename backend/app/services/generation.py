@@ -257,7 +257,7 @@ def _build_user_prompt(
 def generate_flashcards_anthropic(
     content: str,
     num_cards: int = 5,
-    model: str = "claude-3-haiku-20240307",
+    model: str | None = None,
     system_prompt: str = FLASHCARD_SYSTEM_PROMPT,
     prior_questions: list[str] | None = None,
 ) -> list[dict]:
@@ -273,6 +273,7 @@ def generate_flashcards_anthropic(
         List of {"question": str, "answer": str} dicts
     """
     client = get_anthropic_client()
+    model = model or settings.ANTHROPIC_MODEL
 
     user_prompt = _build_user_prompt(content, num_cards, prior_questions)
 
@@ -588,7 +589,7 @@ def generate_concept_prompt(
             text = response.choices[0].message.content
         elif provider == "anthropic":
             response = get_anthropic_client().messages.create(
-                model="claude-3-haiku-20240307",
+                model=settings.ANTHROPIC_MODEL,
                 max_tokens=settings.LLM_MAX_OUTPUT_TOKENS,
                 system=PROMPT_WRITER_SYSTEM,
                 messages=[{"role": "user", "content": user}],
@@ -842,7 +843,7 @@ def _concepts_from_provider(
         if not settings.ANTHROPIC_API_KEY:
             raise ValueError("ANTHROPIC_API_KEY not configured")
         response = get_anthropic_client().messages.create(
-            model="claude-3-haiku-20240307",
+            model=settings.ANTHROPIC_MODEL,
             max_tokens=settings.LLM_MAX_OUTPUT_TOKENS,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
@@ -1156,7 +1157,26 @@ def generate_flashcards_progressive(
 
 
 def get_available_provider() -> str:
-    """Return the first available LLM provider based on configured API keys."""
+    """
+    Which provider to use.
+
+    LLM_PROVIDER wins when set, so adding a second API key can't silently
+    switch which model writes your study material. Without it, fall back to
+    whichever key is configured.
+    """
+    chosen = (settings.LLM_PROVIDER or "").strip().lower()
+    if chosen:
+        key = {
+            "groq": settings.GROQ_API_KEY,
+            "anthropic": settings.ANTHROPIC_API_KEY,
+            "openai": settings.OPENAI_API_KEY,
+        }.get(chosen)
+        if key is None:
+            raise ValueError(f"Unknown LLM_PROVIDER: {chosen}")
+        if not key:
+            raise ValueError(f"LLM_PROVIDER is {chosen} but no API key is set for it")
+        return chosen
+
     if settings.GROQ_API_KEY:
         return "groq"
     elif settings.ANTHROPIC_API_KEY:
