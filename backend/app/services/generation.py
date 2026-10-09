@@ -159,6 +159,53 @@ def _max_tokens_for(num_cards: int) -> int:
     return min(settings.LLM_MAX_OUTPUT_TOKENS, max(400, num_cards * 350))
 
 
+class _OutputBudget:
+    """
+    Self-imposed rate limiting against a tokens-per-minute quota.
+
+    Groq's free tier allows a fixed number of output tokens per minute and
+    rejects whole requests once that is spent. Waiting for a 429 is the
+    expensive way to learn this: the rejected request still cost the round
+    trip, and the backoff is blind to how much budget is actually left.
+    Tracking what has been spent in the last minute lets a pass wait exactly
+    as long as it needs to.
+    """
+
+    def __init__(self) -> None:
+        self._spent: list[tuple[float, int]] = []
+
+    def _prune(self, now: float) -> None:
+        self._spent = [(t, n) for t, n in self._spent if now - t < 60.0]
+
+    def wait_for(self, estimated: int) -> None:
+        limit = settings.LLM_OUTPUT_TOKENS_PER_MINUTE
+        while True:
+            now = time.monotonic()
+            self._prune(now)
+            used = sum(n for _, n in self._spent)
+
+            if used + estimated <= limit or not self._spent:
+                return
+
+            # Sleep until the oldest spend ages out of the window
+            oldest = min(t for t, _ in self._spent)
+            delay = max(1.0, 60.0 - (now - oldest))
+            logger.info(
+                f"Output budget {used}/{limit} per minute; waiting {delay:.0f}s"
+            )
+            time.sleep(delay)
+
+    def record(self, tokens: int) -> None:
+        self._spent.append((time.monotonic(), tokens))
+
+
+_output_budget = _OutputBudget()
+
+# What a concept pass typically costs, used to reserve budget before the
+# call. Measured at ~600 on this prompt; the actual figure replaces it.
+_ESTIMATED_CONCEPT_TOKENS = 650
+
+
 def _call_with_retry(fn, attempts: int = 3, base_delay: float = 20.0):
     """
     Retry a provider call through per-minute rate limits.
@@ -633,11 +680,59 @@ def _parse_json_array(response_text: str) -> list:
             objects.append(obj)
         index = text.find("{", end)
 
-    if not objects:
-        raise json.JSONDecodeError("no complete objects in response", text, 0)
+    if objects:
+        logger.warning(f"Response truncated; salvaged {len(objects)} complete objects")
+        return objects
 
-    logger.warning(f"Response truncated; salvaged {len(objects)} complete objects")
-    return objects
+    repaired = _repair_truncated_object(text)
+    if repaired is not None:
+        logger.warning("Response truncated mid-object; repaired to its last complete field")
+        return [repaired]
+
+    raise json.JSONDecodeError("no complete objects in response", text, 0)
+
+
+def _repair_truncated_object(text: str) -> dict | None:
+    """
+    Rescue a single object that was cut off mid-way.
+
+    A response that stops partway through the only object has no complete
+    object to decode, so the whole window is otherwise lost. Trimming back
+    to the last complete key/value pair and closing the brace gives a
+    concept missing only its final field, which beats nothing at all.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    body = text[start:]
+
+    # Walk back from the end looking for a point that parses once closed
+    for cut in range(len(body), 0, -1):
+        fragment = body[:cut].rstrip()
+        if not fragment.endswith(('"', "}", "]", *"0123456789")):
+            continue
+        fragment = fragment.rstrip(",")
+
+        # Close whatever is still open, innermost first
+        depth_curly = fragment.count("{") - fragment.count("}")
+        depth_square = fragment.count("[") - fragment.count("]")
+        if depth_curly < 0 or depth_square < 0:
+            continue
+        if fragment.count('"') % 2:
+            continue
+
+        candidate = fragment + ("]" * depth_square) + ("}" * depth_curly)
+        try:
+            obj = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+
+        # Worth keeping only if the essentials survived
+        if isinstance(obj, dict) and obj.get("title") and obj.get("definition"):
+            return obj
+
+    return None
 
 
 # Course context rides along in every concept prompt, so it has to stay small
@@ -696,6 +791,7 @@ def _concepts_from_provider(
     prior_titles: list[str],
     course_context: str = "",
     system_prompt: str | None = None,
+    brevity_hint: bool = False,
 ) -> list[dict]:
     """One call: a section of lecture in, structured concepts out."""
     system_prompt = system_prompt or DEFAULT_CONCEPT_PROMPT
@@ -706,15 +802,28 @@ def _concepts_from_provider(
         listed = "\n".join(f"- {t}" for t in prior_titles)
         prompt_parts.append(
             f"Concepts already extracted from earlier sections:\n{listed}\n\n"
-            "Do not repeat these. Where this section extends one, build on it.\n"
+            "These are for context, not a reason to stay silent. Still return "
+            "a concept for this section unless it is administrative — "
+            "near-duplicates are filtered automatically afterwards, so "
+            "withholding one only loses material. Where this section extends "
+            "an idea above, name it and extract what is NEW here.\n"
         )
     prompt_parts.append(f"Extract the concepts from this section:\n\n{content}\n")
+    if brevity_hint:
+        # The first attempt overran the output limit, so ask for the
+        # essentials only rather than the same thing again
+        prompt_parts.append(
+            "IMPORTANT: your previous answer was cut off because it was too "
+            "long. Keep every field to one short sentence, omit "
+            "worked_example entirely, and give at most one question."
+        )
     prompt_parts.append("Remember: Output only valid JSON array.")
     user_prompt = "\n".join(prompt_parts)
 
     if provider == "groq":
         if not settings.GROQ_API_KEY:
             raise ValueError("GROQ_API_KEY not configured")
+        _output_budget.wait_for(_ESTIMATED_CONCEPT_TOKENS)
         response = _call_with_retry(lambda: get_groq_client().chat.completions.create(
             model="qwen/qwen3.8-27b",
             max_tokens=settings.LLM_MAX_OUTPUT_TOKENS,
@@ -724,6 +833,10 @@ def _concepts_from_provider(
             ],
             temperature=0.6,
         ))
+        usage = getattr(response, "usage", None)
+        _output_budget.record(
+            getattr(usage, "completion_tokens", None) or _ESTIMATED_CONCEPT_TOKENS
+        )
         raw = response.choices[0].message.content
     elif provider == "anthropic":
         if not settings.ANTHROPIC_API_KEY:
@@ -907,20 +1020,35 @@ def generate_concepts_progressive(
 
         recent = list(seen)[-PRIOR_QUESTION_CONTEXT:]
 
-        try:
-            raw_concepts = _concepts_from_provider(
-                content="\n\n".join(chunks[i] for i in window),
-                provider=provider,
-                prior_titles=recent,
-                course_context=course_context,
-                system_prompt=system_prompt,
-            )
-        except json.JSONDecodeError:
-            logger.error(f"Concept pass {position}/{len(pending)} returned invalid JSON")
-            continue
-        except Exception:
-            # One bad window shouldn't lose the concepts already extracted
-            logger.exception(f"Concept pass {position}/{len(pending)} failed, continuing")
+        window_text = "\n\n".join(chunks[i] for i in window)
+        raw_concepts = None
+
+        # A window that fails to parse is otherwise lost along with all its
+        # chunks, which is where most missing coverage came from. One retry,
+        # asking for less, recovers the majority.
+        for attempt in range(2):
+            terse = attempt > 0
+            try:
+                raw_concepts = _concepts_from_provider(
+                    content=window_text,
+                    provider=provider,
+                    prior_titles=recent,
+                    course_context="" if terse else course_context,
+                    system_prompt=system_prompt,
+                    brevity_hint=terse,
+                )
+                break
+            except json.JSONDecodeError:
+                logger.warning(
+                    f"Concept pass {position}/{len(pending)} returned invalid JSON"
+                    + (" on retry; giving up" if terse else ", retrying with a shorter ask")
+                )
+            except Exception:
+                # One bad window shouldn't lose the concepts already extracted
+                logger.exception(f"Concept pass {position}/{len(pending)} failed, continuing")
+                break
+
+        if not raw_concepts:
             continue
 
         for raw in raw_concepts:

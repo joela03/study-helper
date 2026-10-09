@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # single request expecting more, so the ceiling sits just under it.
     # Raise this if you move to a paid tier or another provider.
     LLM_MAX_OUTPUT_TOKENS: int = 900
+    # The provider's output-tokens-per-minute quota. Generation paces itself
+    # against this rather than finding it by collecting 429s, which waste
+    # the quota they are waiting for.
+    LLM_OUTPUT_TOKENS_PER_MINUTE: int = 1000
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"  # Local sentence-transformers model
 
     # Comma-separated, e.g.
